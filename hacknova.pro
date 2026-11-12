@@ -1,4 +1,4 @@
-QT += widgets
+QT += widgets sql
 
 CONFIG += c++17
 
@@ -6,16 +6,16 @@ TARGET = hacknova
 TEMPLATE = app
 
 SOURCES += \
+    employe.cpp \
     main.cpp \
-    integration.cpp
+    connection.cpp
 
 HEADERS += \
-    integration.h
+    employe.h \
+    connection.h
 
 FORMS += \
     integration.ui
 
-# Default rules for deployment.
-qnx: target.path = /tmp/$${TARGET}/bin
-else: unix:!android: target.path = /opt/$${TARGET}/bin
-!isEmpty(target.path): INSTALLS += target
+DISTFILES += \
+    .gitignore
