@@ -1,5 +1,4 @@
-
-#include "integration.h"
+#include "salle.h"
 
 #include <QApplication>
 #include <QFont>
@@ -16,7 +15,7 @@ int main(int argc, char *argv[])
     qDebug() << "Pilotes SQL disponibles :"
              << QSqlDatabase::drivers();
 
-    integration w;
+    salle w;
     w.showMaximized();
 
     return a.exec();

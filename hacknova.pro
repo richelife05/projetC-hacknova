@@ -1,4 +1,4 @@
-QT += widgets sql
+QT += widgets sql printsupport
 
 CONFIG += c++17
 
@@ -7,13 +7,25 @@ TEMPLATE = app
 
 SOURCES += \
     main.cpp \
-    integration.cpp
+    salle.cpp \
+    libraries/qrcodegen/qrcodegen.cpp
 
 HEADERS += \
-    integration.h
+    salle.h \
+    libraries/qrcodegen/qrcodegen.hpp
 
 FORMS += \
-    integration.ui
+    salle.ui
+
+INCLUDEPATH += $$PWD/libraries/qrcodegen
+
+# ============================================================
+#  ZXing-C++ (Scan d'image)
+# ============================================================
+INCLUDEPATH += "C:/zxing/zxing-cpp-3.1.1/core/src"
+INCLUDEPATH += "C:/zxing/zxing-cpp-build/core"
+DEPENDPATH += "C:/zxing/zxing-cpp-3.1.1/core/src"
+LIBS += -L"C:/zxing/zxing-cpp-build/core" -lZXing
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
