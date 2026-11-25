@@ -10,6 +10,8 @@
 #include <QFileDialog>
 #include <QTextStream>
 #include <QDateTime>
+#include <QDate>
+#include <QDateEdit>
 #include <QPrinter>
 #include <QPrintDialog>
 #include <QTextDocument>
@@ -22,7 +24,9 @@
 #include <QPagedPaintDevice>
 #include <QAbstractTextDocumentLayout>
 #include <QDir>
+#include <algorithm>
 #include <cmath>
+#include <functional>
 
 #include <QPushButton>
 #include <QStackedWidget>
@@ -50,13 +54,8 @@
 #include <QMap>
 #include <QTimer>
 #include <QGroupBox>
-#include <QListWidget>
-#include <QListWidgetItem>
 #include <QApplication>
 #include <QStyle>
-#include <QGraphicsDropShadowEffect>
-#include <QPropertyAnimation>
-#include <QPointer>
 
 // ---- Nayuki QR Code generator ----
 #include "qrcodegen.hpp"
@@ -67,7 +66,7 @@
 #include "BarcodeFormat.h"
 
 /* ============================================================
- *  HELPERS — Oracle + utilitaires
+ *  HELPERS — Oracle + Palette Sombre HACKNOVA
  * ============================================================ */
 namespace {
 
@@ -96,32 +95,29 @@ QString normaliserDisponibilite(const QString &brute)
     return "Indisponible";
 }
 
-QColor couleurDisponibilite(const QString &dispo)
+QColor couleurDisponibilite(bool disponible)
 {
-    return dispo.compare("Disponible", Qt::CaseInsensitive) == 0
-               ? QColor("#10B981")
-               : QColor("#EF4444");
+    return disponible ? QColor("#34D399") : QColor("#F87171");
 }
 
-/* Palette centralisée */
 namespace Palette {
-const QString fond       = "#080C14";
+const QString fond       = "#0B0F1A";
 const QString carte      = "#111827";
-const QString carteAlt   = "#0B1120";
-const QString bordure    = "#1E293B";
-const QString texte      = "#E2E8F0";
+const QString carteAlt   = "#1E293B";
+const QString bordure    = "#334155";
+const QString texte      = "#F1F5F9";
 const QString texteMuted = "#94A3B8";
 const QString texteDim   = "#64748B";
-const QString accent     = "#6366F1";
-const QString accentDark = "#4338CA";
+const QString accent     = "#4338CA";
+const QString accentGlow = "#818CF8";
+const QString accentDark = "#1E1B4B";
 const QString succes     = "#10B981";
 const QString succesDark = "#059669";
 const QString danger     = "#EF4444";
-const QString dangerDark = "#B91C1C";
-const QString warning    = "#FBBF24";
+const QString dangerDark = "#DC2626";
+const QString warning    = "#F59E0B";
 }
 
-/* Parse un nom "A-1-05" en composants */
 void parserNomSalle(const QString &nom, QString &bloc, int &etage, int &numero)
 {
     const QStringList parts = nom.split("-");
@@ -136,17 +132,133 @@ void parserNomSalle(const QString &nom, QString &bloc, int &etage, int &numero)
     }
 }
 
+/* ============================================================
+ *  COMPOSANT PRO EMBED MESSAGE — Rendu officiel structuré
+ * ============================================================ */
+QString construireEmbedHtml(const QString &accentHex,
+                            const QString &badgeTexte,
+                            const QString &titre,
+                            const QString &sousTitre,
+                            const QString &corpsHtml,
+                            const QString &engagementHtml = QString(),
+                            const QString &piedHtml = QString())
+{
+    QString html = QString(
+                       "<div style='background-color:#151D2E;border:1px solid #2A3852;"
+                       "border-left:4px solid %1;border-radius:10px;padding:12px 15px;'>"
+                       "<div style='margin-bottom:6px;'>"
+                       "<span style='background-color:%1;color:#FFFFFF;font-size:9px;font-weight:900;"
+                       "letter-spacing:0.8px;padding:2px 8px;border-radius:4px;'>%2</span>"
+                       "</div>"
+                       "<div style='color:#F8FAFC;font-size:13px;font-weight:800;margin-bottom:3px;'>%3</div>")
+                       .arg(accentHex, badgeTexte.toHtmlEscaped(), titre.toHtmlEscaped());
+
+    if (!sousTitre.isEmpty()) {
+        html += QString("<div style='color:#94A3B8;font-size:11px;margin-bottom:8px;'>%1</div>")
+        .arg(sousTitre.toHtmlEscaped());
+    }
+
+    html += QString("<div style='color:#E2E8F0;font-size:12px;line-height:1.45;'>%1</div>")
+                .arg(corpsHtml);
+
+    if (!engagementHtml.isEmpty()) {
+        html += QString(
+                    "<div style='margin-top:9px;padding-top:8px;border-top:1px solid #26334A;"
+                    "color:#A5B4FC;font-size:11px;font-style:italic;'>%1</div>")
+                    .arg(engagementHtml);
+    }
+
+    if (!piedHtml.isEmpty()) {
+        html += QString(
+                    "<div style='margin-top:7px;color:#64748B;font-size:10px;'>%1</div>")
+                    .arg(piedHtml);
+    }
+
+    html += "</div>";
+    return html;
+}
+
+QFrame *creerCarteEmbed(QWidget *parent,
+                        const QString &accentHex,
+                        const QString &badgeTexte,
+                        const QString &titre,
+                        const QString &sousTitre,
+                        const QString &corpsHtml,
+                        const QString &engagementHtml = QString(),
+                        const QString &piedHtml = QString())
+{
+    auto *card = new QFrame(parent);
+    card->setStyleSheet(QString(
+                            "QFrame { background-color:#151D2E; border:1px solid #2A3852;"
+                            "border-left:4px solid %1; border-radius:10px; }")
+                            .arg(accentHex));
+
+    auto *lay = new QVBoxLayout(card);
+    lay->setContentsMargins(14, 11, 14, 11);
+    lay->setSpacing(4);
+
+    auto *topRow = new QHBoxLayout;
+    auto *badge = new QLabel(badgeTexte.toUpper(), card);
+    badge->setStyleSheet(QString(
+                             "background-color:%1; color:#FFFFFF; font-size:9px; font-weight:900;"
+                             "letter-spacing:0.8px; padding:3px 8px; border-radius:4px; border:none;")
+                             .arg(accentHex));
+    topRow->addWidget(badge, 0, Qt::AlignLeft);
+
+    if (!sousTitre.isEmpty()) {
+        auto *sub = new QLabel(sousTitre, card);
+        sub->setStyleSheet("color:#94A3B8; font-size:10px; font-weight:600; border:none; background:transparent;");
+        topRow->addStretch();
+        topRow->addWidget(sub);
+    }
+    lay->addLayout(topRow);
+
+    auto *lblTitle = new QLabel(titre, card);
+    lblTitle->setStyleSheet("color:#F8FAFC; font-size:13px; font-weight:800; border:none; background:transparent;");
+    lblTitle->setWordWrap(true);
+    lay->addWidget(lblTitle);
+
+    auto *lblBody = new QLabel(corpsHtml, card);
+    lblBody->setTextFormat(Qt::RichText);
+    lblBody->setStyleSheet("color:#E2E8F0; font-size:12px; border:none; background:transparent;");
+    lblBody->setWordWrap(true);
+    lay->addWidget(lblBody);
+
+    if (!engagementHtml.isEmpty()) {
+        auto *line = new QFrame(card);
+        line->setFrameShape(QFrame::HLine);
+        line->setStyleSheet("background-color:#26334A; max-height:1px; border:none; margin:3px 0;");
+        lay->addWidget(line);
+
+        auto *lblEng = new QLabel(engagementHtml, card);
+        lblEng->setTextFormat(Qt::RichText);
+        lblEng->setStyleSheet("color:#A5B4FC; font-size:11px; font-style:italic; border:none; background:transparent;");
+        lblEng->setWordWrap(true);
+        lay->addWidget(lblEng);
+    }
+
+    if (!piedHtml.isEmpty()) {
+        auto *lblFoot = new QLabel(piedHtml, card);
+        lblFoot->setTextFormat(Qt::RichText);
+        lblFoot->setStyleSheet("color:#64748B; font-size:10px; border:none; background:transparent;");
+        lblFoot->setWordWrap(true);
+        lay->addWidget(lblFoot);
+    }
+
+    return card;
+}
+
 } // namespace
 
 /* ============================================================
- *  STYLES HELPERS STATIQUES
+ *  STYLES HELPERS STATIQUES (MODE SOMBRE)
  * ============================================================ */
 QString salle::styleBouton(const QString &couleur, const QString &hover,
                            const QString &texte)
 {
     return QString(
-               "QPushButton { background-color:%1; %2 border:none; border-radius:6px;"
-               " font-weight:800; font-size:11px; padding:0 14px; min-height:32px; }"
+               "QPushButton { background-color:%1; %2 border:none; border-radius:8px;"
+               " font-weight:800; font-size:11px; padding:0 14px; min-height:34px; }"
                "QPushButton:hover { background-color:%3; }"
                "QPushButton:pressed { padding-top:2px; }")
         .arg(couleur, texte, hover);
@@ -160,14 +272,14 @@ QString salle::styleCarte()
 
 QString salle::styleChamp()
 {
-    return QString("background-color:%1; color:#F1F5F9; border:1px solid #334155;"
-                   "border-radius:6px; padding:0 10px; min-height:32px;")
-        .arg(Palette::carteAlt);
+    return QString("background-color:%1; color:%2; border:1px solid %3;"
+                   "border-radius:8px; padding:0 10px; min-height:34px;")
+        .arg(Palette::carteAlt, Palette::texte, Palette::bordure);
 }
 
 QString salle::styleTitreSection()
 {
-    return QString("color:%1; font-weight:800; font-size:13px;").arg(Palette::texte);
+    return QString("color:%1; font-weight:800; font-size:13px;").arg(Palette::accentGlow);
 }
 
 /* ============================================================
@@ -211,7 +323,8 @@ salle::salle(QWidget *parent)
 
     ui->stackedWidget->setCurrentIndex(0);
 
-    appliquerTheme();
+    organiserPageSalles();
+    appliquerThemeSombre();
     connecterLogin();
     connecterNavigation();
     connecterChatbot();
@@ -219,15 +332,13 @@ salle::salle(QWidget *parent)
 
     remplirTableSalles();
     dessinerStatistiquesSalles();
-    remplirTableEmployes();
-    dessinerStatistiques();
+    mettreAJourTableauDeBordBas();
 }
 
 salle::~salle()
 {
     if (m_debounceRechercheSalle) {
         m_debounceRechercheSalle->stop();
-        // QObject parent = this → supprimé automatiquement
     }
 
     if (QSqlDatabase::contains("hacknova_connection")) {
@@ -241,80 +352,416 @@ salle::~salle()
 }
 
 /* ============================================================
- *  EMPLOYÉS — remplissage
+ *  ORGANISATION PAGE SALLES :
+ *  - 2 boutons métiers en haut
+ *  - Réorganisation statistiques (H & V + %)
+ *  - Tri ASC/DESC + recherche instantanée
  * ============================================================ */
-void salle::remplirTableEmployes()
+void salle::organiserPageSalles()
 {
-    auto *t = ui->tableEmployes;
-    t->clearContents();
-    t->setRowCount(0);
-    t->verticalHeader()->setVisible(false);
-    t->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    t->setSelectionBehavior(QAbstractItemView::SelectRows);
-    t->setAlternatingRowColors(true);
-
-    int lastCol = t->columnCount() - 1;
-    for (int c = 0; c < lastCol; ++c)
-        t->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Stretch);
-    if (lastCol >= 0) {
-        t->horizontalHeader()->setSectionResizeMode(lastCol, QHeaderView::Fixed);
-        t->setColumnWidth(lastCol, 190);
+    if (!ui->scrollSallesContent) return;
+    auto *parent = ui->scrollSallesContent;
+    parent->setMinimumSize(1440, 1080);
+    if (ui->scrollSalles) {
+        ui->scrollSalles->setWidgetResizable(true);
     }
-    t->verticalHeader()->setDefaultSectionSize(42);
+
+    if (!m_btnMetierAffectation) {
+        m_btnMetierAffectation = new QPushButton("🎯 Métier 1 : Affectation intelligente", parent);
+        m_btnMetierAffectation->setGeometry(810, 92, 290, 36);
+        m_btnMetierAffectation->setCursor(Qt::PointingHandCursor);
+        m_btnMetierAffectation->setStyleSheet(styleBouton(Palette::accentDark, Palette::accent));
+        QObject::connect(m_btnMetierAffectation, &QPushButton::clicked,
+                         this, &salle::ouvrirEspaceMetierAffectation);
+    }
+
+    if (!m_btnMetierQR) {
+        m_btnMetierQR = new QPushButton("📱 Métier 2 : QR Code & Accès", parent);
+        m_btnMetierQR->setGeometry(1110, 92, 300, 36);
+        m_btnMetierQR->setCursor(Qt::PointingHandCursor);
+        m_btnMetierQR->setStyleSheet(styleBouton(Palette::accent, Palette::accentDark));
+        QObject::connect(m_btnMetierQR, &QPushButton::clicked,
+                         this, &salle::ouvrirEspaceMetierQR);
+    }
+
+    if (ui->lineEdit_2) {
+        ui->lineEdit_2->setGeometry(10, 325, 310, 38);
+        ui->lineEdit_2->setPlaceholderText("Recherche instantanée par ID (partiel) ou nom...");
+    }
+    if (ui->btnRechercherSalle) {
+        ui->btnRechercherSalle->setGeometry(330, 328, 115, 34);
+    }
+
+    if (!m_comboChampTri) {
+        m_comboChampTri = new QComboBox(parent);
+        m_comboChampTri->setGeometry(455, 328, 155, 34);
+        m_comboChampTri->addItem("ID Salle", "ID");
+        m_comboChampTri->addItem("Nom Salle", "NOM");
+        m_comboChampTri->addItem("Capacité", "CAPACITE");
+        m_comboChampTri->addItem("Type", "TYPE");
+        m_comboChampTri->addItem("Disponibilité", "DISPONIBILITE");
+        m_comboChampTri->addItem("Fin période", "DATE_FIN");
+        m_comboChampTri->setStyleSheet(styleChamp());
+        QObject::connect(m_comboChampTri, &QComboBox::currentIndexChanged,
+                         this, &salle::onTriRapideChange);
+    }
+
+    if (!m_comboSensTri) {
+        m_comboSensTri = new QComboBox(parent);
+        m_comboSensTri->setGeometry(618, 328, 165, 34);
+        m_comboSensTri->addItem("Croissant (ASC)", true);
+        m_comboSensTri->addItem("Décroissant (DESC)", false);
+        m_comboSensTri->setStyleSheet(styleChamp());
+        QObject::connect(m_comboSensTri, &QComboBox::currentIndexChanged,
+                         this, &salle::onTriRapideChange);
+    }
+
+    if (ui->btnTrierSalle) {
+        ui->btnTrierSalle->setGeometry(792, 328, 125, 34);
+        ui->btnTrierSalle->setText("FILTRES / TRI");
+    }
+    if (ui->btnExporterSalle) {
+        ui->btnExporterSalle->setGeometry(925, 328, 125, 34);
+    }
+
+    if (ui->cardTableSalles) {
+        ui->cardTableSalles->setGeometry(10, 385, 981, 470);
+    }
+    if (ui->tableSalles) {
+        ui->tableSalles->setGeometry(15, 40, 951, 415);
+    }
+
+    if (ui->sallesPage_cardStats) {
+        ui->sallesPage_cardStats->setGeometry(1000, 155, 412, 700);
+        if (ui->sallesPage_labelStatutPie) ui->sallesPage_labelStatutPie->hide();
+        if (ui->sallesPage_labelRoleBar)   ui->sallesPage_labelRoleBar->hide();
+
+        if (!m_lblStatsResume) {
+            m_lblStatsResume = new QLabel(ui->sallesPage_cardStats);
+            m_lblStatsResume->setGeometry(16, 36, 380, 82);
+            m_lblStatsResume->setWordWrap(true);
+            m_lblStatsResume->setTextFormat(Qt::RichText);
+        }
+        if (!m_lblBarHorizontale) {
+            m_lblBarHorizontale = new QLabel(ui->sallesPage_cardStats);
+            m_lblBarHorizontale->setGeometry(16, 126, 380, 270);
+        }
+        if (!m_lblBarVerticale) {
+            m_lblBarVerticale = new QLabel(ui->sallesPage_cardStats);
+            m_lblBarVerticale->setGeometry(16, 406, 380, 280);
+        }
+    }
+
+    if (!m_frameBottomDashboard) {
+        m_frameBottomDashboard = new QFrame(parent);
+        m_frameBottomDashboard->setGeometry(10, 868, 1402, 74);
+        m_frameBottomDashboard->setStyleSheet(styleCarte());
+
+        auto *hl = new QHBoxLayout(m_frameBottomDashboard);
+        hl->setContentsMargins(18, 10, 18, 10);
+        hl->setSpacing(18);
+
+        auto makeIndic = [&](const QString &titre, const QString &couleur) -> QLabel* {
+            auto *lbl = new QLabel(m_frameBottomDashboard);
+            lbl->setTextFormat(Qt::RichText);
+            lbl->setStyleSheet(QString(
+                                   "background:%1; border:1px solid %2; border-radius:8px; padding:6px 12px; color:%3;")
+                                   .arg(Palette::carteAlt, Palette::bordure, couleur));
+            lbl->setText(QString("<b>%1 :</b> --").arg(titre));
+            hl->addWidget(lbl, 1);
+            return lbl;
+        };
+
+        m_lblDashTotal  = makeIndic("Total salles", Palette::accentGlow);
+        m_lblDashDispo  = makeIndic("Disponibles", Palette::succes);
+        m_lblDashOccupe = makeIndic("Occupées", Palette::danger);
+        m_lblDashTaux   = makeIndic("Taux dispo", Palette::warning);
+        m_lblDashMaj    = makeIndic("Dernière MAJ", Palette::texteMuted);
+    }
+
+    if (ui->labelFooterSalles) {
+        ui->labelFooterSalles->setGeometry(14, 950, 1200, 22);
+    }
 }
 
-void salle::dessinerStatistiques()
+/* ============================================================
+ *  HISTORIQUE OFFICIEL & EMBED MESSAGES AUTOMATIQUES
+ * ============================================================ */
+void salle::enregistrerHistorique(qint64 idSalle, const QString &categorie,
+                                  const QString &detail, const QString &engagement)
 {
-    {
-        QPixmap pix(210, 210);
-        pix.fill(Qt::transparent);
-        QPainter p(&pix);
-        p.setRenderHint(QPainter::Antialiasing);
+    if (idSalle <= 0) return;
 
-        p.setBrush(QColor(Palette::bordure));
-        p.setPen(Qt::NoPen);
-        p.drawPie(QRectF(10, 20, 130, 130), 0, 360 * 16);
+    EntreeHistoriqueSalle entree;
+    entree.dateHeure  = QDateTime::currentDateTime();
+    entree.categorie  = categorie.trimmed().toUpper();
+    entree.detail     = detail.trimmed();
+    entree.engagement = engagement.trimmed();
 
-        QFont f = p.font();
-        f.setFamily("Segoe UI");
-        f.setPointSize(9);
-        f.setBold(true);
-        p.setFont(f);
+    m_historiqueSalles[idSalle].prepend(entree);
+}
 
-        p.setPen(QColor(Palette::texteMuted));
-        p.drawText(155, 48, "Actif (0)");
-        p.drawText(155, 83, "Inactif (0)");
+QString salle::genererMessageAutoConsultation(const Salle &s) const
+{
+    const QString etatOfficiel = s.estDisponible()
+    ? QString("La direction opérationnelle HACKNOVA certifie que la salle <b>%1</b> est déclarée "
+              "<span style='color:#34D399;font-weight:700;'>DISPONIBLE</span> et prête pour l'accueil d'une équipe ou d'un atelier.")
+            .arg(s.nom.toHtmlEscaped())
+    : QString("La direction opérationnelle HACKNOVA signale que la salle <b>%1</b> est actuellement "
+              "<span style='color:#F87171;font-weight:700;'>INDISPONIBLE</span> ; toute affectation doit vérifier le planning actif.")
+            .arg(s.nom.toHtmlEscaped());
 
-        f.setPointSize(8);
-        f.setBold(false);
-        p.setFont(f);
-        p.setPen(QColor(Palette::texteDim));
-        p.drawText(10, 195, "Répartition par statut");
-        p.end();
-        ui->labelStatutPie->setPixmap(pix);
+    const QString recommandation = (s.capacite >= 25)
+                                       ? QString("Dimensionnement validé pour sessions plénières, ateliers collaboratifs ou présentations (%1 places).")
+                                             .arg(s.capacite)
+                                       : QString("Dimensionnement adapté pour cellule projet, sprint technique ou session dédiée (%1 places).")
+                                             .arg(s.capacite);
+
+    return QString("%1<br><span style='color:#94A3B8;'>%2</span>").arg(etatOfficiel, recommandation);
+}
+
+QString salle::genererMessageAutoQR(const Salle &s, const QString &mode) const
+{
+    const QString statut = s.estDisponible() ? "DISPONIBLE" : "INDISPONIBLE";
+    if (mode == "scan") {
+        return QString("Contrôle d'accès QR validé auprès du référentiel Oracle pour la salle <b>%1</b> "
+                       "(Identifiant #%2 · Capacité : %3 places · État : <b>%4</b>).")
+            .arg(s.nom.toHtmlEscaped()).arg(s.id).arg(s.capacite).arg(statut.toHtmlEscaped());
+    }
+    return QString("Émission officielle du jeton QR d'identification pour la salle <b>%1</b> "
+                   "(Identifiant #%2 · Catégorie : %3 · État : <b>%4</b>).")
+        .arg(s.nom.toHtmlEscaped()).arg(s.id).arg(s.type.toHtmlEscaped()).arg(statut.toHtmlEscaped());
+}
+
+QString salle::genererMessageAutoAffectation(const Salle &s, const QDate &dDeb,
+                                             const QDate &dFin, int duree,
+                                             int effectif, const QString &projet) const
+{
+    const QString nomProj = projet.trimmed().isEmpty() ? "Session Hackathon Officielle" : projet.trimmed();
+    return QString("Affectation officielle enregistrée : la salle <b>%1</b> est attribuée au projet "
+                   "<b>« %2 »</b> pour <b>%3 participant(s)</b> (capacité : %4 places), "
+                   "du <b>%5</b> au <b>%6</b> (durée : <b>%7 jour(s)</b>).")
+        .arg(s.nom.toHtmlEscaped(), nomProj.toHtmlEscaped())
+        .arg(effectif).arg(s.capacite)
+        .arg(dDeb.toString("dd/MM/yyyy"), dFin.toString("dd/MM/yyyy"))
+        .arg(duree);
+}
+
+void salle::ouvrirHistoriqueSalle(qint64 idSalle)
+{
+    const auto opt = chargerSalle(idSalle);
+    const QString nomSalle = opt.has_value() ? opt->nom : QString("Salle #%1").arg(idSalle);
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(QString("Historique Officiel — %1").arg(nomSalle));
+    dlg.setMinimumSize(760, 600);
+    dlg.setStyleSheet(QString("QDialog { background:%1; } QLabel { color:%2; }")
+                          .arg(Palette::carte, Palette::texte));
+
+    auto *lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(24, 24, 24, 24);
+    lay->setSpacing(14);
+
+    // En-tête Embed officiel de l'historique
+    auto *headerEmbed = creerCarteEmbed(
+        &dlg,
+        Palette::accentGlow,
+        "REGISTRE OFFICIEL D'ACTIVITÉ",
+        QString("Historique certifié — Salle %1 (ID #%2)").arg(nomSalle).arg(idSalle),
+        QString("Édité le %1").arg(QDateTime::currentDateTime().toString("dd/MM/yyyy à HH:mm")),
+        QString("Traçabilité complète des opérations, attributions de période, vérifications QR "
+                "et engagements administratifs rattachés à la salle <b>%1</b>.")
+            .arg(nomSalle.toHtmlEscaped()),
+        QString("<b>Clause de traçabilité :</b> Toute opération consignée engage la responsabilité "
+                "de l'administration HACKNOVA."),
+        "Système HACKNOVA · Smart Hackathon Management");
+    lay->addWidget(headerEmbed);
+
+    QVector<EntreeHistoriqueSalle> entries = m_historiqueSalles.value(idSalle);
+
+    if (opt.has_value() && opt->dateDebut.isValid() && opt->dureeJours > 0) {
+        bool dejaPresent = false;
+        for (const auto &e : entries) {
+            if (e.categorie == "AFFECTATION") { dejaPresent = true; break; }
+        }
+        if (!dejaPresent) {
+            EntreeHistoriqueSalle act;
+            act.dateHeure  = QDateTime::currentDateTime();
+            act.categorie  = "AFFECTATION";
+            act.detail     = QString("Attribution active enregistrée pour <b>« %1 »</b> "
+                                 "du <b>%2</b> au <b>%3</b> (<b>%4 jour(s)</b>).")
+                             .arg((opt->projetAssocie.isEmpty() ? "Hackathon" : opt->projetAssocie).toHtmlEscaped(),
+                                  opt->dateDebut.toString("dd/MM/yyyy"),
+                                  opt->dateFin.toString("dd/MM/yyyy"))
+                             .arg(opt->dureeJours);
+            act.engagement = genererEngagementAdmin(*opt);
+            entries.prepend(act);
+        }
     }
 
-    {
-        QPixmap pix(250, 210);
-        pix.fill(Qt::transparent);
-        QPainter p(&pix);
-        p.setRenderHint(QPainter::Antialiasing);
+    // Zone scrollable de cartes Embed modernes
+    auto *scroll = new QScrollArea(&dlg);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setStyleSheet("QScrollArea { background:transparent; }");
 
-        QFont f = p.font();
-        f.setFamily("Segoe UI");
-        f.setPointSize(9);
-        f.setBold(true);
-        p.setFont(f);
-        p.setPen(QColor(Palette::texteDim));
-        p.drawText(10, 100, "Aucun employé enregistré");
+    auto *listWidget = new QWidget(&dlg);
+    listWidget->setStyleSheet("background:transparent;");
+    auto *listLay = new QVBoxLayout(listWidget);
+    listLay->setContentsMargins(0, 2, 6, 2);
+    listLay->setSpacing(10);
 
-        f.setPointSize(8);
-        f.setBold(false);
-        p.setFont(f);
-        p.drawText(10, 195, "Nombre d'employés par rôle");
-        p.end();
-        ui->labelRoleBar->setPixmap(pix);
+    if (entries.isEmpty()) {
+        auto *emptyCard = creerCarteEmbed(
+            listWidget,
+            Palette::texteMuted,
+            "AUCUNE ENTRÉE",
+            "Aucune activité consignée sur cette session",
+            QString("Salle %1").arg(nomSalle),
+            "Aucune action n'a encore été enregistrée pour cette salle depuis le démarrage de la session.",
+            "Les consultations de fiche, générations/scans de QR Code et affectations s'inscrivent automatiquement ici.");
+        listLay->addWidget(emptyCard);
+    } else {
+        for (const auto &e : entries) {
+            QString badgeCol = Palette::accentGlow;
+            QString titreEntree = "Événement salle";
+            if (e.categorie == "AFFECTATION") {
+                badgeCol = Palette::warning;
+                titreEntree = "Attribution de salle & planification";
+            } else if (e.categorie == "AJOUT") {
+                badgeCol = Palette::succes;
+                titreEntree = "Création officielle de la salle";
+            } else if (e.categorie == "MODIFICATION") {
+                badgeCol = Palette::accentGlow;
+                titreEntree = "Mise à jour des paramètres & disponibilité";
+            } else if (e.categorie == "QR") {
+                badgeCol = "#38BDF8";
+                titreEntree = "Opération QR Code & contrôle d'accès";
+            } else if (e.categorie == "CONSULTATION") {
+                badgeCol = "#A78BFA";
+                titreEntree = "Consultation de la fiche Oracle";
+            }
+
+            const QString engHtml = e.engagement.isEmpty()
+                                        ? QString()
+                                        : QString("<b>Engagement officiel :</b> %1").arg(e.engagement.toHtmlEscaped());
+
+            auto *itemCard = creerCarteEmbed(
+                listWidget,
+                badgeCol,
+                e.categorie,
+                titreEntree,
+                e.dateHeure.toString("dd/MM/yyyy · HH:mm:ss"),
+                e.detail,
+                engHtml,
+                QString("Référence salle : %1 (ID #%2)").arg(nomSalle.toHtmlEscaped()).arg(idSalle));
+            listLay->addWidget(itemCard);
+        }
     }
+    listLay->addStretch();
+    scroll->setWidget(listWidget);
+    lay->addWidget(scroll, 1);
+
+    auto *btns = new QHBoxLayout;
+    btns->setSpacing(10);
+
+    auto *btnExportHist = new QPushButton("📄 EXPORTER L'HISTORIQUE (.HTML)", &dlg);
+    btnExportHist->setStyleSheet(styleBouton(Palette::succesDark, Palette::succes));
+    QObject::connect(btnExportHist, &QPushButton::clicked, &dlg, [&, nomSalle, entries]() {
+        const QString chemin = QFileDialog::getSaveFileName(
+            &dlg, "Exporter l'historique officiel",
+            QString("historique_salle_%1_%2.html")
+                .arg(nomSalle, QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")),
+            "Fichiers HTML (*.html)");
+        if (chemin.isEmpty()) return;
+
+        QString docHtml = QString(
+                              "<!DOCTYPE html><html><head><meta charset='utf-8'/>"
+                              "<title>Historique Officiel — %1</title>"
+                              "<style>body{font-family:'Segoe UI',Arial,sans-serif;background:#0B0F1A;color:#F1F5F9;padding:28px;}"
+                              "h1{color:#818CF8;margin-bottom:4px;}.meta{color:#94A3B8;font-size:12px;margin-bottom:20px;}"
+                              ".card{background:#151D2E;border:1px solid #2A3852;border-left:4px solid #818CF8;"
+                              "border-radius:10px;padding:14px 18px;margin-bottom:14px;}"
+                              ".badge{display:inline-block;background:#4338CA;color:#FFF;font-size:10px;font-weight:800;"
+                              "padding:2px 8px;border-radius:4px;margin-bottom:6px;}"
+                              ".date{color:#94A3B8;font-size:11px;float:right;}"
+                              ".eng{margin-top:10px;padding-top:8px;border-top:1px solid #26334A;color:#A5B4FC;font-style:italic;font-size:12px;}"
+                              "</style></head><body>"
+                              "<h1>Historique Officiel — Salle %1 (ID #%2)</h1>"
+                              "<div class='meta'>Document officiel généré le %3 · HACKNOVA</div>")
+                              .arg(nomSalle.toHtmlEscaped())
+                              .arg(idSalle)
+                              .arg(QDateTime::currentDateTime().toString("dd/MM/yyyy à HH:mm:ss"));
+
+        for (const auto &e : entries) {
+            docHtml += QString(
+                           "<div class='card'><span class='badge'>%1</span>"
+                           "<span class='date'>%2</span>"
+                           "<div>%3</div>%4</div>")
+                           .arg(e.categorie.toHtmlEscaped(),
+                                e.dateHeure.toString("dd/MM/yyyy HH:mm:ss").toHtmlEscaped(),
+                                e.detail,
+                                e.engagement.isEmpty()
+                                    ? QString()
+                                    : QString("<div class='eng'>%1</div>").arg(e.engagement.toHtmlEscaped()));
+        }
+        docHtml += "</body></html>";
+
+        QFile f(chemin);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QTextStream out(&f);
+            out.setEncoding(QStringConverter::Utf8);
+            out << docHtml;
+            f.close();
+            QMessageBox::information(&dlg, "Export réussi",
+                                     QString("L'historique officiel a été enregistré :\n%1").arg(chemin));
+        }
+    });
+
+    auto *btnFermer = new QPushButton("FERMER", &dlg);
+    btnFermer->setStyleSheet(styleBouton(Palette::accentDark, Palette::accent));
+    QObject::connect(btnFermer, &QPushButton::clicked, &dlg, &QDialog::accept);
+
+    btns->addWidget(btnExportHist);
+    btns->addStretch();
+    btns->addWidget(btnFermer);
+    lay->addLayout(btns);
+
+    dlg.exec();
+}
+
+/* ============================================================
+ *  CALCUL DYNAMIQUE DES DATES ET DE LA DISPONIBILITÉ
+ * ============================================================ */
+void salle::calculerDisponibiliteAutomatique(Salle &s) const
+{
+    const QDate aujourdHui = QDate::currentDate();
+    s.disponibilite = normaliserDisponibilite(s.disponibilite);
+    bool dispoBase = (s.disponibilite.compare("Disponible", Qt::CaseInsensitive) == 0);
+
+    const auto it = m_periodesSession.constFind(s.id);
+    if (it != m_periodesSession.constEnd() && it->dateDebut.isValid() && it->dureeJours > 0) {
+        s.dateDebut     = it->dateDebut;
+        s.dureeJours    = it->dureeJours;
+        s.dateFin       = it->dateFin();
+        s.projetAssocie = it->projet;
+
+        const bool occupeeAujourdHui = it->estActiveLe(aujourdHui);
+        if (occupeeAujourdHui) {
+            s.disponibleAuto = false;
+            s.disponibilite  = "Indisponible";
+            return;
+        }
+        s.disponibleAuto = dispoBase;
+        s.disponibilite  = dispoBase ? "Disponible" : "Indisponible";
+        return;
+    }
+
+    s.dateDebut     = QDate();
+    s.dureeJours    = 0;
+    s.dateFin       = QDate();
+    s.projetAssocie.clear();
+    s.disponibleAuto = dispoBase;
 }
 
 /* ============================================================
@@ -322,13 +769,6 @@ void salle::dessinerStatistiques()
  * ============================================================ */
 void salle::connecterActions()
 {
-    if (ui->btnSuggerer_2)
-        QObject::connect(ui->btnSuggerer_2, &QPushButton::clicked,
-                         this, &salle::onSuggererSalle);
-    if (ui->btnValiderQR_4)
-        QObject::connect(ui->btnValiderQR_4, &QPushButton::clicked,
-                         this, &salle::onValiderQR);
-
     if (ui->btnAjouterSalle)
         QObject::connect(ui->btnAjouterSalle, &QPushButton::clicked,
                          this, &salle::onAjouterSalle);
@@ -345,30 +785,14 @@ void salle::connecterActions()
         QObject::connect(ui->btnExporterSalle, &QPushButton::clicked,
                          this, &salle::ouvrirDialogueExport);
 
-    if (ui->leEffectif_2)
-        QObject::connect(ui->leEffectif_2, &QLineEdit::returnPressed,
-                         this, &salle::onSuggererSalle);
-    if (ui->leCodeQR_4)
-        QObject::connect(ui->leCodeQR_4, &QLineEdit::returnPressed,
-                         this, &salle::onValiderQR);
-
-    if (ui->btnScannerCamera_4)
-        QObject::connect(ui->btnScannerCamera_4, &QPushButton::clicked,
-                         this, &salle::ouvrirScannerImage);
-
-    /* ============================================================
-     *  RECHERCHE SALLE — bouton + Entrée + DYNAMIQUE (live)
-     * ============================================================ */
     if (ui->lineEdit_2) {
-        // 1) Entrée → recherche immédiate (comportement d'origine)
         QObject::connect(ui->lineEdit_2, &QLineEdit::returnPressed,
                          this, &salle::onRechercherSalle);
 
-        // 2) Recherche dynamique avec debounce 250 ms
         if (!m_debounceRechercheSalle) {
             m_debounceRechercheSalle = new QTimer(this);
             m_debounceRechercheSalle->setSingleShot(true);
-            m_debounceRechercheSalle->setInterval(250);
+            m_debounceRechercheSalle->setInterval(180);
             QObject::connect(m_debounceRechercheSalle, &QTimer::timeout,
                              this, &salle::onRechercheDynamiqueSalle);
         }
@@ -403,10 +827,10 @@ ResultatValidation salle::validerSaisieSalle(const Salle &s, const QString &type
 void salle::focusChampFautif(int champFautif)
 {
     switch (champFautif) {
-    case 0: if (ui->spinBoxSalleCapacite)     ui->spinBoxSalleCapacite->setFocus();     break;
-    case 1: if (ui->lineEditSalleTypeAutre)   ui->lineEditSalleTypeAutre->setFocus();   break;
-    case 2: if (ui->spinBoxSalleNumero)       ui->spinBoxSalleNumero->setFocus();       break;
-    case 3: if (ui->spinBoxSalleEtage)        ui->spinBoxSalleEtage->setFocus();        break;
+    case 0: if (ui->spinBoxSalleCapacite)   ui->spinBoxSalleCapacite->setFocus();   break;
+    case 1: if (ui->lineEditSalleTypeAutre) ui->lineEditSalleTypeAutre->setFocus(); break;
+    case 2: if (ui->spinBoxSalleNumero)     ui->spinBoxSalleNumero->setFocus();     break;
+    case 3: if (ui->spinBoxSalleEtage)      ui->spinBoxSalleEtage->setFocus();      break;
     default: break;
     }
 }
@@ -433,6 +857,7 @@ std::optional<Salle> salle::chargerSalle(qint64 idSalle) const
     s.type          = sqlStr(q.value(3));
     s.disponibilite = sqlStr(q.value(4));
     parserNomSalle(s.nom, s.bloc, s.etage, s.numeroSalle);
+    calculerDisponibiliteAutomatique(s);
     return s;
 }
 
@@ -476,7 +901,7 @@ QStringList salle::typesSalleDisponibles() const
 }
 
 /* ============================================================
- *  CREATE — Ajouter une salle
+ *  CREATE — Ajouter une salle (Disponibilité incrémentée auto)
  * ============================================================ */
 void salle::onAjouterSalle()
 {
@@ -484,13 +909,18 @@ void salle::onAjouterSalle()
         !ui->spinBoxSalleNumero || !ui->spinBoxSalleCapacite) return;
 
     Salle s;
-    s.bloc = ui->comboBoxSalleBloc->currentText();
-    s.etage = ui->spinBoxSalleEtage->value();
+    s.bloc        = ui->comboBoxSalleBloc->currentText();
+    s.etage       = ui->spinBoxSalleEtage->value();
     s.numeroSalle = ui->spinBoxSalleNumero->value();
-    s.capacite = ui->spinBoxSalleCapacite->value();
-    s.disponibilite = normaliserDisponibilite(ui->comboBoxSalleDispo->currentText());
+    s.capacite    = ui->spinBoxSalleCapacite->value();
 
-    QString typeBase = ui->comboBoxSalleType->currentText();
+    s.disponibilite = "Disponible";
+    if (ui->comboBoxSalleDispo) {
+        int idxDispo = ui->comboBoxSalleDispo->findText("Disponible", Qt::MatchFixedString);
+        if (idxDispo >= 0) ui->comboBoxSalleDispo->setCurrentIndex(idxDispo);
+    }
+
+    QString typeBase  = ui->comboBoxSalleType->currentText();
     QString typeAutre = ui->lineEditSalleTypeAutre->text().trimmed();
     s.type = (typeBase.compare("Autre", Qt::CaseInsensitive) == 0) ? typeAutre : typeBase;
 
@@ -519,10 +949,10 @@ void salle::onAjouterSalle()
     q.prepare("INSERT INTO SALLE "
               "(ID_SALLE, NOM_SALLE, CAPACITE, TYPE_SALLE, DISPONIBILITE) "
               "VALUES (SEQ_SALLE.NEXTVAL, :nom, :cap, :type, :dispo)");
-    q.bindValue(":nom",   s.nom,            QSql::In);
-    q.bindValue(":cap",   s.capacite,       QSql::In);
-    q.bindValue(":type",  s.type,           QSql::In);
-    q.bindValue(":dispo", s.disponibilite,  QSql::In);
+    q.bindValue(":nom",   s.nom,           QSql::In);
+    q.bindValue(":cap",   s.capacite,      QSql::In);
+    q.bindValue(":type",  s.type,          QSql::In);
+    q.bindValue(":dispo", s.disponibilite, QSql::In);
 
     if (!q.exec()) {
         db.rollback();
@@ -535,14 +965,32 @@ void salle::onAjouterSalle()
         return;
     }
 
-    QMessageBox::information(this, "Ajouter une salle",
-                             QString("Salle %1 ajoutée avec succès !").arg(s.nom));
+    qint64 newId = 0;
+    QSqlQuery qId(db);
+    if (qId.exec("SELECT SEQ_SALLE.CURRVAL FROM DUAL") && qId.next()) {
+        newId = qId.value(0).toLongLong();
+    }
+
+    ++m_compteurSallesDisponibles;
+    if (newId > 0) {
+        s.id = newId;
+        enregistrerHistorique(newId, "AJOUT",
+                              QString("Création officielle de la salle <b>%1</b> (%2 · %3 places · État : <b>Disponible</b>).")
+                                  .arg(s.nom.toHtmlEscaped(), s.type.toHtmlEscaped()).arg(s.capacite),
+                              genererEngagementAdmin(s));
+    }
+
+    QMessageBox::information(this, "Notification Officielle — Création de salle",
+                             QString("La salle <b>%1</b> a été enregistrée avec succès dans Oracle.<br>"
+                                     "Statut initial attribué : <b>Disponible</b> (compteur d'ajout : +%2).")
+                                 .arg(s.nom.toHtmlEscaped())
+                                 .arg(m_compteurSallesDisponibles));
     viderFormulaireSalle();
     rafraichirSallesEtStats();
 }
 
 /* ============================================================
- *  UPDATE — Modifier une salle
+ *  UPDATE — Modifier une salle + gestion période/dates
  * ============================================================ */
 void salle::ouvrirModificationSalle(qint64 idSalle)
 {
@@ -555,7 +1003,7 @@ void salle::ouvrirModificationSalle(qint64 idSalle)
 
     QDialog dlg(this);
     dlg.setWindowTitle(QString("Modifier la salle %1").arg(s.nom));
-    dlg.setMinimumWidth(440);
+    dlg.setMinimumWidth(480);
     dlg.setStyleSheet(QString("QDialog { background:%1; } QLabel { color:%2; }")
                           .arg(Palette::carte, Palette::texte));
 
@@ -564,7 +1012,7 @@ void salle::ouvrirModificationSalle(qint64 idSalle)
     lay->setSpacing(12);
 
     auto *titre = new QLabel(QString("<h2 style='color:%1;margin:0;'>%2</h2>")
-                                 .arg(Palette::accent, s.nom.toHtmlEscaped()));
+                                 .arg(Palette::accentGlow, s.nom.toHtmlEscaped()));
     lay->addWidget(titre);
 
     auto *form = new QFormLayout;
@@ -577,7 +1025,7 @@ void salle::ouvrirModificationSalle(qint64 idSalle)
 
     auto *cbType = new QComboBox(&dlg);
     cbType->addItems(typesSalleDisponibles());
-    int idx = cbType->findText(s.type);
+    int idx = cbType->findText(s.type, Qt::MatchFixedString);
     if (idx >= 0) cbType->setCurrentIndex(idx);
     else { cbType->addItem(s.type); cbType->setCurrentIndex(cbType->count() - 1); }
     cbType->setStyleSheet(styleChamp());
@@ -598,16 +1046,55 @@ void salle::ouvrirModificationSalle(qint64 idSalle)
     cbDispo->setCurrentIndex(s.estDisponible() ? 0 : 1);
     cbDispo->setStyleSheet(styleChamp());
 
-    form->addRow("Capacité :",       spCap);
-    form->addRow("Type :",           cbType);
-    form->addRow("Précisez :",       edAutre);
-    form->addRow("Disponibilité :",  cbDispo);
+    auto *edProjet = new QLineEdit(&dlg);
+    edProjet->setPlaceholderText("Projet / événement (optionnel)");
+    edProjet->setText(s.projetAssocie);
+    edProjet->setStyleSheet(styleChamp());
+
+    auto *dtDebut = new QDateEdit(&dlg);
+    dtDebut->setCalendarPopup(true);
+    dtDebut->setDisplayFormat("dd/MM/yyyy");
+    dtDebut->setDate(s.dateDebut.isValid() ? s.dateDebut : QDate::currentDate());
+    dtDebut->setStyleSheet(styleChamp());
+
+    auto *spDuree = new QSpinBox(&dlg);
+    spDuree->setRange(0, 365);
+    spDuree->setSuffix(" jour(s)");
+    spDuree->setValue(s.dureeJours);
+    spDuree->setStyleSheet(styleChamp());
+
+    auto *lblFinCalc = new QLabel(&dlg);
+    lblFinCalc->setStyleSheet(QString("color:%1;font-weight:700;").arg(Palette::accentGlow));
+
+    auto majFinCalculee = [&]() {
+        if (spDuree->value() <= 0) {
+            lblFinCalc->setText("Aucune période active (disponibilité selon statut BD)");
+        } else {
+            const QDate fin = dtDebut->date().addDays(spDuree->value() - 1);
+            const bool activeToday = (QDate::currentDate() >= dtDebut->date() && QDate::currentDate() <= fin);
+            lblFinCalc->setText(QString("Fin calculée : %1 (%2)")
+                                    .arg(fin.toString("dd/MM/yyyy"),
+                                         activeToday ? "Indisponible aujourd'hui" : "Hors période aujourd'hui"));
+        }
+    };
+    majFinCalculee();
+    QObject::connect(dtDebut, &QDateEdit::dateChanged, &dlg, [&](const QDate &){ majFinCalculee(); });
+    QObject::connect(spDuree, &QSpinBox::valueChanged, &dlg, [&](int){ majFinCalculee(); });
+
+    form->addRow("Capacité :",        spCap);
+    form->addRow("Type :",            cbType);
+    form->addRow("Précisez :",        edAutre);
+    form->addRow("État de base :",    cbDispo);
+    form->addRow("Projet associé :",   edProjet);
+    form->addRow("Date début :",      dtDebut);
+    form->addRow("Durée :",           spDuree);
+    form->addRow("Période / Dispo :", lblFinCalc);
     lay->addLayout(form);
 
     auto *btns = new QHBoxLayout;
     btns->addStretch();
     auto *btnAnnuler = new QPushButton("Annuler", &dlg);
-    btnAnnuler->setStyleSheet(styleBouton(Palette::bordure, "#334155", "color:#CBD5E1;"));
+    btnAnnuler->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
     auto *btnValider = new QPushButton("Enregistrer", &dlg);
     btnValider->setStyleSheet(styleBouton(Palette::succesDark, Palette::succes));
     btns->addWidget(btnAnnuler);
@@ -618,7 +1105,32 @@ void salle::ouvrirModificationSalle(qint64 idSalle)
     QObject::connect(btnValider, &QPushButton::clicked, [&]() {
         QString finalType = cbType->currentText();
         if (finalType == "Autre" && !edAutre->text().isEmpty())
-            finalType = edAutre->text();
+            finalType = edAutre->text().trimmed();
+
+        const QDate dDeb = dtDebut->date();
+        const int dur = spDuree->value();
+
+        if (dur > 0) {
+            for (auto it = m_periodesSession.constBegin(); it != m_periodesSession.constEnd(); ++it) {
+                if (it.key() == idSalle) continue;
+                if (it->chevauche(dDeb, dur)) {
+                    QMessageBox::warning(&dlg, "Chevauchement détecté",
+                                         QString("Conflit de période avec la salle ID %1 (%2 → %3).")
+                                             .arg(it.key())
+                                             .arg(it->dateDebut.toString("dd/MM/yyyy"))
+                                             .arg(it->dateFin().toString("dd/MM/yyyy")));
+                    return;
+                }
+            }
+        }
+
+        QString dispoFinale = cbDispo->currentText();
+        if (dur > 0) {
+            const QDate dFin = dDeb.addDays(dur - 1);
+            if (QDate::currentDate() >= dDeb && QDate::currentDate() <= dFin) {
+                dispoFinale = "Indisponible";
+            }
+        }
 
         QSqlDatabase db2 = dbHacknova();
         if (!db2.transaction()) return;
@@ -628,7 +1140,7 @@ void salle::ouvrirModificationSalle(qint64 idSalle)
                   "DISPONIBILITE = :dispo WHERE ID_SALLE = :id");
         u.bindValue(":cap",   spCap->value());
         u.bindValue(":type",  finalType);
-        u.bindValue(":dispo", cbDispo->currentText());
+        u.bindValue(":dispo", dispoFinale);
         u.bindValue(":id",    QString::number(idSalle));
 
         if (!u.exec()) {
@@ -637,9 +1149,39 @@ void salle::ouvrirModificationSalle(qint64 idSalle)
             return;
         }
         db2.commit();
+
+        const QString projTrim = edProjet->text().trimmed();
+        if (dur > 0) {
+            PeriodeReservation p;
+            p.dateDebut  = dDeb;
+            p.dureeJours = dur;
+            p.projet     = projTrim;
+            m_periodesSession[idSalle] = p;
+        } else {
+            m_periodesSession.remove(idSalle);
+        }
+
+        Salle modSalle = s;
+        modSalle.capacite = spCap->value();
+        modSalle.type = finalType;
+        modSalle.disponibilite = dispoFinale;
+
+        enregistrerHistorique(idSalle, "MODIFICATION",
+                              QString("Mise à jour officielle : capacité <b>%1 places</b>, catégorie <b>%2</b>, "
+                                      "état <b>%3</b>%4.")
+                                  .arg(spCap->value()).arg(finalType.toHtmlEscaped(), dispoFinale.toHtmlEscaped())
+                                  .arg(dur > 0 ? QString(", période <b>%1 → %2</b> (projet : <b>%3</b>)")
+                                                     .arg(dDeb.toString("dd/MM/yyyy"),
+                                                          dDeb.addDays(dur - 1).toString("dd/MM/yyyy"),
+                                                          (projTrim.isEmpty() ? "Projet" : projTrim).toHtmlEscaped())
+                                               : QString(", sans période planifiée")),
+                              genererEngagementAdmin(modSalle));
+
         dlg.accept();
         rafraichirSallesEtStats();
-        QMessageBox::information(this, "Succès", "Salle modifiée.");
+        QMessageBox::information(this, "Notification Officielle — Mise à jour",
+                                 QString("Les paramètres de la salle <b>%1</b> ont été mis à jour avec succès.")
+                                     .arg(s.nom.toHtmlEscaped()));
     });
 
     dlg.exec();
@@ -666,41 +1208,55 @@ void salle::ouvrirSuppressionSalle(qint64 idSalle, const QString &nomSalle)
         QMessageBox::warning(this, "Supprimer une salle", "Suppression impossible.");
         return;
     }
-    QMessageBox::information(this, "Supprimer une salle", "Salle supprimée.");
+    m_periodesSession.remove(idSalle);
+    m_historiqueSalles.remove(idSalle);
+    QMessageBox::information(this, "Notification Officielle — Suppression",
+                             QString("La salle <b>%1</b> a été retirée du référentiel.")
+                                 .arg(nomSalle.toHtmlEscaped()));
     rafraichirSallesEtStats();
 }
 
 /* ============================================================
- *  READ — Consulter une salle
+ *  READ — Consulter une salle (Embeds officiels + Historique)
  * ============================================================ */
 void salle::ouvrirConsultationSalle(qint64 idSalle)
 {
     const auto opt = chargerSalle(idSalle);
-    if (!opt.has_value()) return;
+    if (!opt.has_value()) {
+        QMessageBox::warning(this, "Consultation salle",
+                             QString("Aucune salle trouvée pour l'ID %1.").arg(idSalle));
+        return;
+    }
     const Salle &s = *opt;
     const PayloadQR payload = construirePayloadQR(s);
+    const QString msgOfficielVoir = genererMessageAutoConsultation(s);
+
+    enregistrerHistorique(idSalle, "CONSULTATION",
+                          QString("Consultation officielle de la fiche salle <b>%1</b> (état : <b>%2</b>).")
+                              .arg(s.nom.toHtmlEscaped(), s.disponibilite.toHtmlEscaped()),
+                          payload.engagementAdmin);
 
     QDialog dlg(this);
-    dlg.setWindowTitle(QString("Salle — %1").arg(s.nom));
-    dlg.setMinimumSize(620, 640);
+    dlg.setWindowTitle(QString("Fiche Officielle — %1").arg(s.nom));
+    dlg.setMinimumSize(700, 740);
     dlg.setStyleSheet(QString("QDialog { background:%1; } QLabel { color:%2; }")
                           .arg(Palette::carte, Palette::texte));
 
     auto *lay = new QVBoxLayout(&dlg);
     lay->setContentsMargins(24, 24, 24, 24);
-    lay->setSpacing(14);
+    lay->setSpacing(12);
 
     auto *header = new QHBoxLayout;
     auto *titre = new QLabel(QString(
                                  "<div style='font-size:22px;font-weight:900;color:%1;'>%2</div>"
-                                 "<div style='font-size:11px;color:%3;margin-top:2px;'>ID %4 · %5 places · %6</div>")
-                                 .arg(Palette::texte, s.nom.toHtmlEscaped(), Palette::texteMuted)
+                                 "<div style='font-size:11px;color:%3;margin-top:2px;'>Identifiant #%4 · %5 places · %6</div>")
+                                 .arg(Palette::accentGlow, s.nom.toHtmlEscaped(), Palette::texteMuted)
                                  .arg(s.id).arg(s.capacite).arg(s.type.toHtmlEscaped()));
     titre->setTextFormat(Qt::RichText);
     header->addWidget(titre, 1);
 
-    const QString dispoColor = s.estDisponible() ? Palette::succes : Palette::danger;
-    const QString dispoTexte = s.estDisponible() ? "DISPONIBLE" : "INDISPONIBLE";
+    const QString dispoColor = s.estDisponible() ? Palette::succesDark : Palette::dangerDark;
+    const QString dispoTexte = s.estDisponible() ? "DISPONIBLE" : "INDISPONIBLE / OCCUPÉE";
     auto *badge = new QLabel(dispoTexte);
     badge->setStyleSheet(QString(
                              "background:%1; color:#FFFFFF; font-weight:900; font-size:10px;"
@@ -711,13 +1267,13 @@ void salle::ouvrirConsultationSalle(qint64 idSalle)
     auto *infos = new QFrame;
     infos->setStyleSheet(styleCarte());
     auto *infosLay = new QVBoxLayout(infos);
-    infosLay->setContentsMargins(18, 14, 18, 14);
+    infosLay->setContentsMargins(18, 12, 18, 12);
 
     auto row = [&](const QString &k, const QString &v) {
         auto *h = new QHBoxLayout;
         auto *lk = new QLabel(k);
         lk->setStyleSheet(QString("color:%1;font-weight:700;font-size:11px;")
-                              .arg(Palette::accent));
+                              .arg(Palette::accentGlow));
         auto *lv = new QLabel(v);
         lv->setStyleSheet(QString("color:%1;font-size:12px;").arg(Palette::texte));
         lv->setWordWrap(true);
@@ -731,60 +1287,60 @@ void salle::ouvrirConsultationSalle(qint64 idSalle)
     row("Capacité",          QString("%1 places").arg(s.capacite));
     row("Type",              s.type);
     row("Disponibilité",     s.disponibilite);
+    row("Date système",      QDate::currentDate().toString("dd/MM/yyyy"));
+    if (s.dateDebut.isValid() && s.dureeJours > 0) {
+        row("Projet / Période", QString("%1 — Du %2 au %3 (%4 j)")
+                                    .arg(s.projetAssocie.isEmpty() ? "Réservation active" : s.projetAssocie,
+                                         s.dateDebut.toString("dd/MM/yyyy"),
+                                         s.dateFin.toString("dd/MM/yyyy"))
+                                    .arg(s.dureeJours));
+    } else {
+        row("Projet / Réservation", "Aucune période active enregistrée");
+    }
     lay->addWidget(infos);
 
-    auto *remarque = new QFrame;
-    remarque->setStyleSheet(QString(
-                                "QFrame { background:%1; border-left:3px solid %2; border-radius:8px; }")
-                                .arg(Palette::carteAlt, Palette::accent));
-    auto *remLay = new QVBoxLayout(remarque);
-    remLay->setContentsMargins(14, 10, 14, 10);
-    auto *remTitle = new QLabel("💡 Remarque automatique");
-    remTitle->setStyleSheet(QString("color:%1;font-weight:800;font-size:11px;")
-                                .arg(Palette::accent));
-    auto *remText = new QLabel(payload.remarqueAuto);
-    remText->setStyleSheet(QString("color:%1;font-size:12px;").arg(Palette::texte));
-    remText->setWordWrap(true);
-    remLay->addWidget(remTitle);
-    remLay->addWidget(remText);
-    lay->addWidget(remarque);
+    // Embed 1 : Message officiel & diagnostic d'exploitation
+    auto *embedEtat = creerCarteEmbed(
+        &dlg,
+        s.estDisponible() ? Palette::succes : Palette::warning,
+        "MESSAGE OFFICIEL · ÉTAT D'EXPLOITATION",
+        QString("Rapport d'état — Salle %1").arg(s.nom),
+        QDate::currentDate().toString("dd/MM/yyyy"),
+        msgOfficielVoir + "<br>" + payload.remarqueAuto.toHtmlEscaped());
+    lay->addWidget(embedEtat);
 
-    auto *admin = new QFrame;
-    admin->setStyleSheet(QString(
-                             "QFrame { background:%1; border:1px solid #312E81; border-radius:8px; }")
-                             .arg(Palette::carteAlt));
-    auto *adminLay = new QVBoxLayout(admin);
-    adminLay->setContentsMargins(14, 10, 14, 10);
-    auto *adminTitle = new QLabel("📜 Message administratif");
-    adminTitle->setStyleSheet(QString("color:%1;font-weight:800;font-size:11px;")
-                                  .arg(Palette::warning));
-    auto *adminText = new QLabel(genererMessageAdministratif(s, "consultation"));
-    adminText->setStyleSheet(QString("color:%1;font-size:12px;font-style:italic;")
-                                 .arg(Palette::texte));
-    adminText->setWordWrap(true);
-    adminLay->addWidget(adminTitle);
-    adminLay->addWidget(adminText);
-    lay->addWidget(admin);
-
-    auto *eng = new QLabel(payload.engagementAdmin);
-    eng->setStyleSheet(QString("color:%1;font-style:italic;font-size:11px;"
-                               "background:%2; padding:12px; border-radius:8px;")
-                           .arg(Palette::texteMuted, Palette::carteAlt));
-    eng->setWordWrap(true);
-    lay->addWidget(eng);
+    // Embed 2 : Avis administratif & Engagement officiel
+    auto *embedAdmin = creerCarteEmbed(
+        &dlg,
+        Palette::accentGlow,
+        "AVIS ADMINISTRATIF & ENGAGEMENT",
+        "Certification & responsabilité de gestion",
+        QString("Réf. SALLE-%1").arg(s.id),
+        genererMessageAdministratif(s, "consultation"),
+        QString("<b>Engagement officiel :</b> %1").arg(payload.engagementAdmin.toHtmlEscaped()),
+        "HACKNOVA · Direction de la logistique et des espaces");
+    lay->addWidget(embedAdmin);
 
     lay->addStretch();
 
     auto *btns = new QHBoxLayout;
-    auto *btnQR = new QPushButton("📷 VOIR LE QR CODE");
+    btns->setSpacing(10);
+
+    auto *btnHistorique = new QPushButton("🕒 HISTORIQUE OFFICIEL", &dlg);
+    btnHistorique->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
+    QObject::connect(btnHistorique, &QPushButton::clicked, &dlg,
+                     [this, idSalle]() { this->ouvrirHistoriqueSalle(idSalle); });
+
+    auto *btnQR = new QPushButton("📷 GÉNÉRER QR CODE", &dlg);
     btnQR->setStyleSheet(styleBouton(Palette::accentDark, Palette::accent));
     QObject::connect(btnQR, &QPushButton::clicked, &dlg,
                      [this, idSalle]() { this->ouvrirGenerateurQR(idSalle); });
 
-    auto *btnFermer = new QPushButton("FERMER");
-    btnFermer->setStyleSheet(styleBouton(Palette::bordure, "#334155", "color:#CBD5E1;"));
+    auto *btnFermer = new QPushButton("FERMER", &dlg);
+    btnFermer->setStyleSheet(styleBouton(Palette::succesDark, Palette::succes));
     QObject::connect(btnFermer, &QPushButton::clicked, &dlg, &QDialog::accept);
 
+    btns->addWidget(btnHistorique);
     btns->addWidget(btnQR);
     btns->addStretch();
     btns->addWidget(btnFermer);
@@ -807,9 +1363,9 @@ void salle::remplirTableSalles()
 
     QSqlQuery q(db);
     if (!q.exec("SELECT ID_SALLE, NOM_SALLE, CAPACITE, TYPE_SALLE, DISPONIBILITE "
-                "FROM SALLE ORDER BY NOM_SALLE")) return;
+                "FROM SALLE ORDER BY ID_SALLE ASC")) return;
 
-    int row = 0;
+    QVector<Salle> liste;
     while (q.next()) {
         Salle s;
         s.id            = q.value(0).toLongLong();
@@ -817,6 +1373,15 @@ void salle::remplirTableSalles()
         s.capacite      = q.value(2).toInt();
         s.type          = sqlStr(q.value(3));
         s.disponibilite = sqlStr(q.value(4));
+        parserNomSalle(s.nom, s.bloc, s.etage, s.numeroSalle);
+        calculerDisponibiliteAutomatique(s);
+        liste.append(s);
+    }
+
+    trierSallesMemoire(liste, m_triCourant);
+
+    int row = 0;
+    for (const Salle &s : liste) {
         insererLigneSalle(row++, s);
     }
 
@@ -830,7 +1395,7 @@ void salle::remplirTableSalles()
         t->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Stretch);
     if (lastCol >= 0) {
         t->horizontalHeader()->setSectionResizeMode(lastCol, QHeaderView::Fixed);
-        t->setColumnWidth(lastCol, 260);
+        t->setColumnWidth(lastCol, 270);
     }
     t->verticalHeader()->setDefaultSectionSize(44);
     t->setSortingEnabled(true);
@@ -852,7 +1417,7 @@ void salle::insererLigneSalle(int row, const Salle &s)
     t->setItem(row, 3, new QTableWidgetItem(s.type));
 
     auto *dispoItem = new QTableWidgetItem(s.disponibilite);
-    dispoItem->setForeground(couleurDisponibilite(s.disponibilite));
+    dispoItem->setForeground(couleurDisponibilite(s.estDisponible()));
     dispoItem->setTextAlignment(Qt::AlignCenter);
     QFont df = dispoItem->font();
     df.setBold(true);
@@ -863,8 +1428,7 @@ void salle::insererLigneSalle(int row, const Salle &s)
 }
 
 /* ============================================================
- *  READ — Recherche multicritère (bouton / Entrée)
- *  Comportement d'origine : affiche un QMessageBox si 0 résultat.
+ *  READ — Recherche instantanée par ID (partiel) ou Nom
  * ============================================================ */
 void salle::onRechercherSalle()
 {
@@ -882,16 +1446,16 @@ void salle::onRechercherSalle()
     QSqlQuery q(db);
     q.prepare("SELECT ID_SALLE, NOM_SALLE, CAPACITE, TYPE_SALLE, DISPONIBILITE "
               "FROM SALLE "
-              "WHERE UPPER(NOM_SALLE) LIKE UPPER(:terme) "
-              "   OR UPPER(TYPE_SALLE) LIKE UPPER(:terme) "
-              "   OR TO_CHAR(ID_SALLE) = :id "
-              "ORDER BY NOM_SALLE");
-    q.bindValue(":terme", "%" + terme + "%", QSql::In);
-    q.bindValue(":id",    terme, QSql::In);
+              "WHERE TO_CHAR(ID_SALLE) LIKE :idPartiel "
+              "   OR UPPER(NOM_SALLE) LIKE UPPER(:nomPartiel) "
+              "   OR UPPER(TYPE_SALLE) LIKE UPPER(:nomPartiel) "
+              "ORDER BY ID_SALLE ASC");
+    q.bindValue(":idPartiel",  "%" + terme + "%", QSql::In);
+    q.bindValue(":nomPartiel", "%" + terme + "%", QSql::In);
 
     if (!q.exec()) { rafraichirSallesEtStats(); return; }
 
-    int row = 0, trouvees = 0;
+    QVector<Salle> trouvees;
     while (q.next()) {
         Salle s;
         s.id            = q.value(0).toLongLong();
@@ -899,26 +1463,31 @@ void salle::onRechercherSalle()
         s.capacite      = q.value(2).toInt();
         s.type          = sqlStr(q.value(3));
         s.disponibilite = sqlStr(q.value(4));
-        insererLigneSalle(row++, s);
-        ++trouvees;
+        parserNomSalle(s.nom, s.bloc, s.etage, s.numeroSalle);
+        calculerDisponibiliteAutomatique(s);
+        trouvees.append(s);
     }
-    if (trouvees == 0) {
+
+    trierSallesMemoire(trouvees, m_triCourant);
+
+    int row = 0;
+    for (const Salle &s : trouvees) {
+        insererLigneSalle(row++, s);
+    }
+
+    if (trouvees.isEmpty()) {
         QMessageBox::information(this, "Recherche",
                                  QString("Aucune salle ne correspond à « %1 ».").arg(terme));
     }
     t->setSortingEnabled(true);
 }
 
-/* ============================================================
- *  READ — Recherche DYNAMIQUE (live search, debounce 250 ms)
- *  Pas de QMessageBox si 0 résultat (pour ne pas spammer).
- * ============================================================ */
 void salle::onRechercheDynamiqueSalle()
 {
     if (!ui->lineEdit_2 || !ui->tableSalles) return;
 
-    // Champ vide → on restaure la liste complète
-    if (ui->lineEdit_2->text().trimmed().isEmpty()) {
+    const QString terme = ui->lineEdit_2->text().trimmed();
+    if (terme.isEmpty()) {
         rafraichirSallesEtStats();
         return;
     }
@@ -926,24 +1495,22 @@ void salle::onRechercheDynamiqueSalle()
     QSqlDatabase db = dbHacknova();
     if (!db.isValid() || !db.isOpen()) return;
 
-    const QString terme = ui->lineEdit_2->text().trimmed();
-
     auto *t = ui->tableSalles;
     viderTableSalles();
 
     QSqlQuery q(db);
     q.prepare("SELECT ID_SALLE, NOM_SALLE, CAPACITE, TYPE_SALLE, DISPONIBILITE "
               "FROM SALLE "
-              "WHERE UPPER(NOM_SALLE) LIKE UPPER(:terme) "
-              "   OR UPPER(TYPE_SALLE) LIKE UPPER(:terme) "
-              "   OR TO_CHAR(ID_SALLE) = :id "
-              "ORDER BY NOM_SALLE");
-    q.bindValue(":terme", "%" + terme + "%", QSql::In);
-    q.bindValue(":id",    terme, QSql::In);
+              "WHERE TO_CHAR(ID_SALLE) LIKE :idPartiel "
+              "   OR UPPER(NOM_SALLE) LIKE UPPER(:nomPartiel) "
+              "   OR UPPER(TYPE_SALLE) LIKE UPPER(:nomPartiel) "
+              "ORDER BY ID_SALLE ASC");
+    q.bindValue(":idPartiel",  "%" + terme + "%", QSql::In);
+    q.bindValue(":nomPartiel", "%" + terme + "%", QSql::In);
 
     if (!q.exec()) return;
 
-    int row = 0;
+    QVector<Salle> trouvees;
     while (q.next()) {
         Salle s;
         s.id            = q.value(0).toLongLong();
@@ -951,16 +1518,74 @@ void salle::onRechercheDynamiqueSalle()
         s.capacite      = q.value(2).toInt();
         s.type          = sqlStr(q.value(3));
         s.disponibilite = sqlStr(q.value(4));
+        parserNomSalle(s.nom, s.bloc, s.etage, s.numeroSalle);
+        calculerDisponibiliteAutomatique(s);
+        trouvees.append(s);
+    }
+
+    trierSallesMemoire(trouvees, m_triCourant);
+
+    int row = 0;
+    for (const Salle &s : trouvees) {
         insererLigneSalle(row++, s);
     }
 
     t->setSortingEnabled(true);
-    dessinerStatistiquesSalles();   // mise à jour du camembert
+    dessinerStatistiquesSalles();
+    mettreAJourTableauDeBordBas();
 }
 
 /* ============================================================
- *  Tri/filtrage avancé
+ *  TRI CROISSANT / DÉCROISSANT & FILTRAGE AVANCÉ
  * ============================================================ */
+void salle::onTriRapideChange()
+{
+    if (m_comboChampTri)
+        m_triCourant.champTri = m_comboChampTri->currentData().toString();
+    if (m_comboSensTri)
+        m_triCourant.ordreCroissant = m_comboSensTri->currentData().toBool();
+
+    if (ui->lineEdit_2 && !ui->lineEdit_2->text().trimmed().isEmpty()) {
+        onRechercheDynamiqueSalle();
+    } else if (!m_triCourant.estVide()) {
+        appliquerCriteresTri(m_triCourant);
+    } else {
+        remplirTableSalles();
+    }
+}
+
+void salle::trierSallesMemoire(QVector<Salle> &liste, const CriteresTri &c) const
+{
+    const bool asc = c.ordreCroissant;
+    const QString champ = c.champTri;
+
+    std::sort(liste.begin(), liste.end(), [&](const Salle &a, const Salle &b) {
+        if (c.trierParCapaciteCroissante && a.capacite != b.capacite)
+            return a.capacite < b.capacite;
+        if (c.trierParCapaciteDecroissante && a.capacite != b.capacite)
+            return a.capacite > b.capacite;
+
+        if (champ == "ID") {
+            if (a.id != b.id) return asc ? (a.id < b.id) : (a.id > b.id);
+        } else if (champ == "NOM") {
+            const int cmp = a.nom.compare(b.nom, Qt::CaseInsensitive);
+            if (cmp != 0) return asc ? (cmp < 0) : (cmp > 0);
+        } else if (champ == "CAPACITE") {
+            if (a.capacite != b.capacite) return asc ? (a.capacite < b.capacite) : (a.capacite > b.capacite);
+        } else if (champ == "TYPE") {
+            const int cmp = a.type.compare(b.type, Qt::CaseInsensitive);
+            if (cmp != 0) return asc ? (cmp < 0) : (cmp > 0);
+        } else if (champ == "DISPONIBILITE") {
+            const int cmp = a.disponibilite.compare(b.disponibilite, Qt::CaseInsensitive);
+            if (cmp != 0) return asc ? (cmp < 0) : (cmp > 0);
+        } else if (champ == "DATE_FIN") {
+            if (a.dateFin != b.dateFin) return asc ? (a.dateFin < b.dateFin) : (a.dateFin > b.dateFin);
+        }
+
+        return a.id < b.id;
+    });
+}
+
 void salle::onTrierSalle()
 {
     ouvrirDialogueTri();
@@ -983,6 +1608,7 @@ QVector<Salle> salle::chargerSallesFiltrees(const CriteresTri &c) const
         s.type          = sqlStr(q.value(3));
         s.disponibilite = sqlStr(q.value(4));
         parserNomSalle(s.nom, s.bloc, s.etage, s.numeroSalle);
+        calculerDisponibiliteAutomatique(s);
 
         if (!c.blocs.isEmpty() && !c.blocs.contains(s.bloc)) continue;
         if (!c.etages.isEmpty() && !c.etages.contains(s.etage)) continue;
@@ -991,21 +1617,13 @@ QVector<Salle> salle::chargerSallesFiltrees(const CriteresTri &c) const
         if (c.capaciteMin > 0 && s.capacite < c.capaciteMin) continue;
         if (c.capaciteMax > 0 && s.capacite > c.capaciteMax) continue;
         if (!c.nomContient.trimmed().isEmpty()
-            && !s.nom.contains(c.nomContient, Qt::CaseInsensitive)) continue;
+            && !s.nom.contains(c.nomContient, Qt::CaseInsensitive)
+            && !QString::number(s.id).contains(c.nomContient.trimmed())) continue;
 
         resultat.append(s);
     }
 
-    std::sort(resultat.begin(), resultat.end(), [&c](const Salle &a, const Salle &b) {
-        if (c.trierParCapaciteCroissante && a.capacite != b.capacite)
-            return a.capacite < b.capacite;
-        if (c.trierParCapaciteDecroissante && a.capacite != b.capacite)
-            return a.capacite > b.capacite;
-        if (a.bloc != b.bloc) return a.bloc < b.bloc;
-        if (a.etage != b.etage) return a.etage < b.etage;
-        return a.numeroSalle < b.numeroSalle;
-    });
-
+    trierSallesMemoire(resultat, c);
     return resultat;
 }
 
@@ -1058,8 +1676,8 @@ void salle::ouvrirDialogueTri()
 
     auto *titre = new QLabel(QString(
                                  "<div style='font-size:20px;font-weight:900;color:%1;'>🔍 Tri & filtrage avancés</div>"
-                                 "<div style='font-size:11px;color:%2;'>Combinez plusieurs critères simultanément.</div>")
-                                 .arg(Palette::texte, Palette::texteMuted));
+                                 "<div style='font-size:11px;color:%2;'>Combinez plusieurs critères et choisissez le sens ASC/DESC.</div>")
+                                 .arg(Palette::accentGlow, Palette::texteMuted));
     titre->setTextFormat(Qt::RichText);
     lay->addWidget(titre);
 
@@ -1081,7 +1699,7 @@ void salle::ouvrirDialogueTri()
                              "QGroupBox { color:%1; font-weight:800; font-size:12px;"
                              "border:1px solid %2; border-radius:8px; margin-top:10px; padding-top:14px; }"
                              "QGroupBox::title { subcontrol-origin: margin; left:12px; padding:0 6px; }")
-                             .arg(Palette::accent, Palette::bordure));
+                             .arg(Palette::accentGlow, Palette::bordure));
         auto *gl = new QGridLayout(g);
         gl->setSpacing(6);
         int i = 0;
@@ -1110,7 +1728,7 @@ void salle::ouvrirDialogueTri()
                               "QGroupBox { color:%1; font-weight:800; font-size:12px;"
                               "border:1px solid %2; border-radius:8px; margin-top:10px; padding-top:14px; }"
                               "QGroupBox::title { subcontrol-origin: margin; left:12px; padding:0 6px; }")
-                              .arg(Palette::accent, Palette::bordure));
+                              .arg(Palette::accentGlow, Palette::bordure));
     auto *capLay = new QHBoxLayout(capBox);
     auto *spMin = new QSpinBox; spMin->setRange(0, 9999);
     auto *spMax = new QSpinBox; spMax->setRange(0, 9999);
@@ -1123,21 +1741,21 @@ void salle::ouvrirDialogueTri()
     capLay->addStretch();
     cl->addWidget(capBox);
 
-    auto *nomBox = new QGroupBox("Nom de salle");
+    auto *nomBox = new QGroupBox("Nom ou ID");
     nomBox->setStyleSheet(capBox->styleSheet());
     auto *nomLay = new QHBoxLayout(nomBox);
     auto *edNom = new QLineEdit;
-    edNom->setPlaceholderText("Contient… (ex: A-1)");
+    edNom->setPlaceholderText("Contient… (ex: A-1 ou 12)");
     edNom->setStyleSheet(styleChamp());
     nomLay->addWidget(edNom);
     cl->addWidget(nomBox);
 
-    auto *triBox = new QGroupBox("Ordre d'affichage");
+    auto *triBox = new QGroupBox("Ordre d'affichage (Croissant / Décroissant)");
     triBox->setStyleSheet(capBox->styleSheet());
     auto *triLay = new QVBoxLayout(triBox);
-    auto *rbNom   = new QCheckBox("Tri par défaut (bloc → étage → n°)");
-    auto *rbCapA  = new QCheckBox("Capacité croissante");
-    auto *rbCapD  = new QCheckBox("Capacité décroissante");
+    auto *rbNom   = new QCheckBox("Tri par ID (Croissant par défaut)");
+    auto *rbCapA  = new QCheckBox("Capacité croissante (ASC)");
+    auto *rbCapD  = new QCheckBox("Capacité décroissante (DESC)");
     rbNom->setChecked(true);
     for (auto *rb : {rbNom, rbCapA, rbCapD})
         rb->setStyleSheet(QString("QCheckBox { color:%1; font-size:12px; }").arg(Palette::texte));
@@ -1155,9 +1773,9 @@ void salle::ouvrirDialogueTri()
 
     auto *btns = new QHBoxLayout;
     auto *btnReset = new QPushButton("♻ Réinitialiser");
-    btnReset->setStyleSheet(styleBouton(Palette::bordure, "#334155", "color:#CBD5E1;"));
+    btnReset->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
     auto *btnAnnuler = new QPushButton("Annuler");
-    btnAnnuler->setStyleSheet(styleBouton(Palette::bordure, "#334155", "color:#CBD5E1;"));
+    btnAnnuler->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
     auto *btnAppliquer = new QPushButton("✅ Appliquer");
     btnAppliquer->setStyleSheet(styleBouton(Palette::accentDark, Palette::accent));
 
@@ -1175,10 +1793,12 @@ void salle::ouvrirDialogueTri()
         spMin->setValue(0); spMax->setValue(0);
         edNom->clear();
         rbNom->setChecked(true);
+        m_triCourant = CriteresTri{};
     });
     QObject::connect(btnAnnuler, &QPushButton::clicked, &dlg, &QDialog::reject);
     QObject::connect(btnAppliquer, &QPushButton::clicked, [&]() {
-        CriteresTri c;
+        CriteresTri c = m_triCourant;
+        c.blocs.clear(); c.etages.clear(); c.types.clear(); c.disponibilites.clear();
         for (auto *cb : cbBlocs) if (cb->isChecked()) c.blocs.insert(cb->text());
         for (auto *cb : cbEtages) if (cb->isChecked()) c.etages.insert(cb->text().toInt());
         for (auto *cb : cbTypes) if (cb->isChecked()) c.types.insert(cb->text());
@@ -1188,6 +1808,7 @@ void salle::ouvrirDialogueTri()
         c.nomContient = edNom->text();
         c.trierParCapaciteCroissante   = rbCapA->isChecked();
         c.trierParCapaciteDecroissante = rbCapD->isChecked();
+        m_triCourant = c;
 
         dlg.accept();
 
@@ -1196,6 +1817,7 @@ void salle::ouvrirDialogueTri()
         } else {
             appliquerCriteresTri(c);
             dessinerStatistiquesSalles();
+            mettreAJourTableauDeBordBas();
         }
     });
 
@@ -1220,7 +1842,7 @@ void salle::ouvrirDialogueExport()
     auto *titre = new QLabel(QString(
                                  "<div style='font-size:20px;font-weight:900;color:%1;'>📄 Export PDF personnalisé</div>"
                                  "<div style='font-size:11px;color:%2;'>Choisissez la portée, les colonnes et la mise en page.</div>")
-                                 .arg(Palette::texte, Palette::texteMuted));
+                                 .arg(Palette::accentGlow, Palette::texteMuted));
     titre->setTextFormat(Qt::RichText);
     lay->addWidget(titre);
 
@@ -1240,9 +1862,9 @@ void salle::ouvrirDialogueExport()
     auto *edEnTete  = new QLineEdit("HACKNOVA — Smart Hackathon Management");
     auto *edPied    = new QLineEdit("Document confidentiel — HACKNOVA");
     for (auto *e : {edTitre, edSous, edEnTete, edPied}) e->setStyleSheet(styleChamp());
-    form->addRow("Titre :",       edTitre);
-    form->addRow("Sous-titre :",  edSous);
-    form->addRow("En-tête :",     edEnTete);
+    form->addRow("Titre :",        edTitre);
+    form->addRow("Sous-titre :",   edSous);
+    form->addRow("En-tête :",      edEnTete);
     form->addRow("Pied de page :", edPied);
 
     auto *cbOrient = new QComboBox;
@@ -1255,17 +1877,17 @@ void salle::ouvrirDialogueExport()
                                "QGroupBox { color:%1; font-weight:800; font-size:12px;"
                                "border:1px solid %2; border-radius:8px; margin-top:10px; padding-top:14px; }"
                                "QGroupBox::title { subcontrol-origin: margin; left:12px; padding:0 6px; }")
-                               .arg(Palette::accent, Palette::bordure));
+                               .arg(Palette::accentGlow, Palette::bordure));
     auto *colsLay = new QGridLayout(colsBox);
     colsLay->setSpacing(6);
 
-    auto *ckID  = new QCheckBox("ID");          ckID->setChecked(true);
-    auto *ckNom = new QCheckBox("Nom");         ckNom->setChecked(true);
-    auto *ckCap = new QCheckBox("Capacité");    ckCap->setChecked(true);
-    auto *ckTyp = new QCheckBox("Type");        ckTyp->setChecked(true);
+    auto *ckID  = new QCheckBox("ID");            ckID->setChecked(true);
+    auto *ckNom = new QCheckBox("Nom");           ckNom->setChecked(true);
+    auto *ckCap = new QCheckBox("Capacité");      ckCap->setChecked(true);
+    auto *ckTyp = new QCheckBox("Type");          ckTyp->setChecked(true);
     auto *ckDis = new QCheckBox("Disponibilité"); ckDis->setChecked(true);
-    auto *ckBlc = new QCheckBox("Bloc");        ckBlc->setChecked(true);
-    auto *ckEtg = new QCheckBox("Étage");       ckEtg->setChecked(true);
+    auto *ckBlc = new QCheckBox("Bloc");          ckBlc->setChecked(true);
+    auto *ckEtg = new QCheckBox("Étage");         ckEtg->setChecked(true);
     for (auto *c : {ckID, ckNom, ckCap, ckTyp, ckDis, ckBlc, ckEtg})
         c->setStyleSheet(QString("QCheckBox { color:%1; font-size:12px; }").arg(Palette::texte));
     colsLay->addWidget(ckID,  0, 0); colsLay->addWidget(ckNom, 0, 1);
@@ -1284,7 +1906,7 @@ void salle::ouvrirDialogueExport()
 
     auto *btns = new QHBoxLayout;
     auto *btnAnnuler = new QPushButton("Annuler");
-    btnAnnuler->setStyleSheet(styleBouton(Palette::bordure, "#334155", "color:#CBD5E1;"));
+    btnAnnuler->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
     auto *btnExporter = new QPushButton("💾 Exporter en PDF");
     btnExporter->setStyleSheet(styleBouton(Palette::succesDark, Palette::succes));
     btns->addStretch();
@@ -1296,20 +1918,20 @@ void salle::ouvrirDialogueExport()
 
     QObject::connect(btnExporter, &QPushButton::clicked, [&]() {
         OptionsExportPDF opt;
-        opt.portee       = static_cast<OptionsExportPDF::Portee>(cbPortee->currentIndex());
-        opt.titre        = edTitre->text().trimmed();
-        opt.sousTitre    = edSous->text().trimmed();
-        opt.enTete       = edEnTete->text().trimmed();
-        opt.piedDePage   = edPied->text().trimmed();
-        opt.paysage      = (cbOrient->currentIndex() == 1);
+        opt.portee         = static_cast<OptionsExportPDF::Portee>(cbPortee->currentIndex());
+        opt.titre          = edTitre->text().trimmed();
+        opt.sousTitre      = edSous->text().trimmed();
+        opt.enTete         = edEnTete->text().trimmed();
+        opt.piedDePage     = edPied->text().trimmed();
+        opt.paysage        = (cbOrient->currentIndex() == 1);
         opt.numeroterPages = ckNum->isChecked();
-        opt.afficherID       = ckID->isChecked();
-        opt.afficherNom      = ckNom->isChecked();
+        opt.afficherID     = ckID->isChecked();
+        opt.afficherNom    = ckNom->isChecked();
         opt.afficherCapacite = ckCap->isChecked();
-        opt.afficherType     = ckTyp->isChecked();
-        opt.afficherDispo    = ckDis->isChecked();
-        opt.afficherBloc     = ckBlc->isChecked();
-        opt.afficherEtage    = ckEtg->isChecked();
+        opt.afficherType   = ckTyp->isChecked();
+        opt.afficherDispo  = ckDis->isChecked();
+        opt.afficherBloc   = ckBlc->isChecked();
+        opt.afficherEtage  = ckEtg->isChecked();
 
         QVector<Salle> salles;
         if (opt.portee == OptionsExportPDF::ToutesLesDonnees) {
@@ -1353,7 +1975,7 @@ void salle::ouvrirDialogueExport()
             ".entete { color:#94A3B8; font-size:9pt; text-align:right; margin-bottom:8px; }"
             ".pied { color:#94A3B8; font-size:9pt; text-align:center; margin-top:16px; }"
             "table { border-collapse:collapse; width:100%; margin-top:8px; table-layout:fixed; }"
-            "th { background:#312E81; color:#FFFFFF; padding:8px 10px; text-align:left; font-size:10pt; font-weight:bold; border:none; }"
+            "th { background:#1E1B4B; color:#FFFFFF; padding:8px 10px; text-align:left; font-size:10pt; font-weight:bold; border:none; }"
             "td { border-bottom:1px solid #E2E8F0; padding:6px 10px; font-size:10pt; vertical-align:middle; word-wrap:break-word; }"
             "tr { page-break-inside: avoid; }"
             "tr:nth-child(even) td { background:#F8FAFC; }"
@@ -1470,85 +2092,400 @@ void salle::onExporterSalle()
 }
 
 /* ============================================================
- *  MÉTIER — Affectation intelligente
+ *  AFFECTATION INTELLIGENTE :
+ *  - Recommandation auto + liste des salles disponibles
+ *  - Embed message officiel + Historique
  * ============================================================ */
-void salle::onSuggererSalle()
+bool salle::affecterSalleSpecifique(const Salle &s, const QDate &dDeb, int duree,
+                                    int effectif, const QString &projet,
+                                    QWidget *parentDlg, QString *messageSortie)
 {
-    if (!ui->leEffectif_2) return;
+    const QDate dFin = dDeb.addDays(duree - 1);
 
-    bool ok = false;
-    const int effectif = ui->leEffectif_2->text().trimmed().toInt(&ok);
-    if (!ok || effectif <= 0) {
-        QMessageBox::warning(this, "Affectation",
-                             "Veuillez saisir un effectif valide (entier > 0).");
-        ui->leEffectif_2->setFocus();
-        return;
+    for (auto it = m_periodesSession.constBegin(); it != m_periodesSession.constEnd(); ++it) {
+        if (it.key() == s.id) continue;
+        if (it->chevauche(dDeb, duree)) {
+            QMessageBox::warning(parentDlg, "Conflit de période",
+                                 QString("La salle %1 est déjà réservée du %2 au %3.")
+                                     .arg(s.nom,
+                                          it->dateDebut.toString("dd/MM/yyyy"),
+                                          it->dateFin().toString("dd/MM/yyyy")));
+            return false;
+        }
     }
 
-    QSqlDatabase db = dbHacknova();
-    if (!db.isValid() || !db.isOpen()) return;
+    PeriodeReservation p;
+    p.dateDebut  = dDeb;
+    p.dureeJours = duree;
+    p.projet     = projet.trimmed();
+    m_periodesSession[s.id] = p;
 
-    QSqlQuery q(db);
-    q.prepare("SELECT ID_SALLE, NOM_SALLE, CAPACITE, TYPE_SALLE, DISPONIBILITE "
-              "FROM SALLE WHERE DISPONIBILITE = 'Disponible'");
-    if (!q.exec()) return;
-
-    QVector<Salle> candidates;
-    while (q.next()) {
-        Salle s;
-        s.id            = q.value(0).toLongLong();
-        s.nom           = sqlStr(q.value(1));
-        s.capacite      = q.value(2).toInt();
-        s.type          = sqlStr(q.value(3));
-        s.disponibilite = sqlStr(q.value(4));
-        if (s.capacite >= effectif) candidates.append(s);
+    if (QDate::currentDate() >= dDeb && QDate::currentDate() <= dFin) {
+        QSqlDatabase db = dbHacknova();
+        if (db.isValid() && db.isOpen() && db.transaction()) {
+            QSqlQuery u(db);
+            u.prepare("UPDATE SALLE SET DISPONIBILITE = 'Indisponible' WHERE ID_SALLE = :id");
+            u.bindValue(":id", QString::number(s.id));
+            if (u.exec()) db.commit();
+            else db.rollback();
+        }
     }
 
-    if (candidates.isEmpty()) {
-        QMessageBox::warning(this, "Affectation intelligente",
-                             QString("Aucune salle disponible ne peut accueillir %1 personne(s).").arg(effectif));
-        return;
+    const QString msgOfficiel = genererMessageAutoAffectation(s, dDeb, dFin, duree, effectif, projet);
+    const QString eng         = genererEngagementAdmin(s);
+    enregistrerHistorique(s.id, "AFFECTATION", msgOfficiel, eng);
+
+    if (messageSortie) {
+        *messageSortie = construireEmbedHtml(
+            Palette::succes,
+            "CONFIRMATION OFFICIELLE D'AFFECTATION",
+            QString("Salle %1 attribuée avec succès").arg(s.nom),
+            QString("Période : %1 → %2").arg(dDeb.toString("dd/MM/yyyy"), dFin.toString("dd/MM/yyyy")),
+            msgOfficiel,
+            QString("<b>Engagement officiel :</b> %1").arg(eng.toHtmlEscaped()),
+            "HACKNOVA · Système d'affectation intelligente");
     }
 
-    std::sort(candidates.begin(), candidates.end(), [effectif](const Salle &a, const Salle &b) {
-        const int margeA = a.capacite - effectif;
-        const int margeB = b.capacite - effectif;
-        if (margeA != margeB) return margeA < margeB;
-        return a.id < b.id;
+    rafraichirSallesEtStats();
+    return true;
+}
+
+void salle::ouvrirEspaceMetierAffectation()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle("Métier 1 — Affectation intelligente & Salles disponibles");
+    dlg.setMinimumSize(880, 650);
+    dlg.setStyleSheet(QString("QDialog { background:%1; } QLabel { color:%2; }")
+                          .arg(Palette::carte, Palette::texte));
+
+    auto *lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(24, 24, 24, 24);
+    lay->setSpacing(14);
+
+    auto *lblTitre = new QLabel(
+        "<h2 style='color:#818CF8;margin:0;'>🎯 Affectation intelligente des salles</h2>"
+        "<p style='color:#94A3B8;margin:4px 0 0 0;'>"
+        "Consultez la liste des salles disponibles selon l'effectif et la période, affectez directement "
+        "depuis la liste ou lancez la recommandation automatique, et accédez à l'historique officiel.</p>");
+    lblTitre->setTextFormat(Qt::RichText);
+    lblTitre->setWordWrap(true);
+    lay->addWidget(lblTitre);
+
+    auto *form = new QFormLayout;
+    form->setSpacing(10);
+
+    auto *edEff = new QLineEdit(&dlg);
+    edEff->setPlaceholderText("Ex. 6");
+    edEff->setText("5");
+    edEff->setStyleSheet(styleChamp());
+
+    auto *dtDebut = new QDateEdit(&dlg);
+    dtDebut->setCalendarPopup(true);
+    dtDebut->setDisplayFormat("dd/MM/yyyy");
+    dtDebut->setDate(QDate::currentDate());
+    dtDebut->setStyleSheet(styleChamp());
+
+    auto *spDuree = new QSpinBox(&dlg);
+    spDuree->setRange(1, 365);
+    spDuree->setValue(3);
+    spDuree->setStyleSheet(styleChamp());
+
+    auto *edProjet = new QLineEdit(&dlg);
+    edProjet->setPlaceholderText("Nom du projet / équipe hackathon");
+    edProjet->setStyleSheet(styleChamp());
+
+    form->addRow("Effectif requis :", edEff);
+    form->addRow("Date début :",      dtDebut);
+    form->addRow("Durée (jours) :",   spDuree);
+    form->addRow("Projet / Équipe :", edProjet);
+    lay->addLayout(form);
+
+    auto *actionBar = new QHBoxLayout;
+    actionBar->setSpacing(10);
+
+    auto *btnListerDispo = new QPushButton("📋 Lister les salles disponibles", &dlg);
+    btnListerDispo->setStyleSheet(styleBouton(Palette::accent, Palette::accentDark));
+
+    auto *btnRecommander = new QPushButton("⚡ Recommander & affecter la meilleure", &dlg);
+    btnRecommander->setStyleSheet(styleBouton(Palette::succesDark, Palette::succes));
+
+    actionBar->addWidget(btnListerDispo);
+    actionBar->addWidget(btnRecommander);
+    actionBar->addStretch();
+    lay->addLayout(actionBar);
+
+    auto *lblListeTitle = new QLabel("<b>Salles disponibles correspondantes :</b>");
+    lblListeTitle->setStyleSheet(QString("color:%1;font-size:12px;").arg(Palette::accentGlow));
+    lay->addWidget(lblListeTitle);
+
+    auto *tblDispo = new QTableWidget(&dlg);
+    tblDispo->setColumnCount(6);
+    tblDispo->setHorizontalHeaderLabels({"ID", "Nom", "Type", "Capacité", "Écart places", "Actions"});
+    tblDispo->verticalHeader()->setVisible(false);
+    tblDispo->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    tblDispo->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tblDispo->setAlternatingRowColors(true);
+    tblDispo->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    tblDispo->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    tblDispo->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    tblDispo->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    tblDispo->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    tblDispo->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Fixed);
+    tblDispo->setColumnWidth(5, 220);
+    tblDispo->verticalHeader()->setDefaultSectionSize(40);
+    lay->addWidget(tblDispo, 1);
+
+    auto *lblEmbedSortie = new QLabel(&dlg);
+    lblEmbedSortie->setTextFormat(Qt::RichText);
+    lblEmbedSortie->setWordWrap(true);
+    lblEmbedSortie->setText(construireEmbedHtml(
+        Palette::accentGlow,
+        "ASSISTANT D'AFFECTATION",
+        "Sélection des espaces disponibles",
+        "Prêt",
+        "Renseignez l'effectif et la période souhaitée pour afficher les salles éligibles et procéder à l'affectation officielle."));
+    lay->addWidget(lblEmbedSortie);
+
+    auto lireParams = [&](int &effectif, QDate &dDeb, int &dur) -> bool {
+        bool ok = false;
+        effectif = edEff->text().trimmed().toInt(&ok);
+        if (!ok || effectif <= 0) {
+            QMessageBox::warning(&dlg, "Affectation", "Saisissez un effectif strictement positif.");
+            return false;
+        }
+        dDeb = dtDebut->date();
+        dur  = spDuree->value();
+        return true;
+    };
+
+    auto calculerCandidates = [&](int effectif, const QDate &dDeb, int dur) -> QVector<Salle> {
+        QVector<Salle> candidates;
+        const QVector<Salle> toutes = chargerSallesFiltrees(CriteresTri{});
+        for (const Salle &s : toutes) {
+            if (s.capacite < effectif) continue;
+            bool conflit = false;
+            auto itP = m_periodesSession.constFind(s.id);
+            if (itP != m_periodesSession.constEnd() && itP->chevauche(dDeb, dur)) {
+                conflit = true;
+            }
+            if (!conflit && s.estDisponible()) {
+                candidates.append(s);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(), [effectif](const Salle &a, const Salle &b) {
+            const int mA = a.capacite - effectif;
+            const int mB = b.capacite - effectif;
+            if (mA != mB) return mA < mB;
+            return a.id < b.id;
+        });
+        return candidates;
+    };
+
+    std::function<void()> remplirListeDispo = [&]() {
+        int effectif = 0, dur = 0;
+        QDate dDeb;
+        if (!lireParams(effectif, dDeb, dur)) return;
+
+        for (int r = tblDispo->rowCount() - 1; r >= 0; --r) {
+            QWidget *w = tblDispo->cellWidget(r, 5);
+            if (w) { tblDispo->removeCellWidget(r, 5); w->deleteLater(); }
+        }
+        tblDispo->setRowCount(0);
+
+        const QVector<Salle> candidates = calculerCandidates(effectif, dDeb, dur);
+        int row = 0;
+        for (const Salle &s : candidates) {
+            tblDispo->insertRow(row);
+            tblDispo->setItem(row, 0, new QTableWidgetItem(QString::number(s.id)));
+            tblDispo->setItem(row, 1, new QTableWidgetItem(s.nom));
+            tblDispo->setItem(row, 2, new QTableWidgetItem(s.type));
+            tblDispo->setItem(row, 3, new QTableWidgetItem(QString("%1 places").arg(s.capacite)));
+            tblDispo->setItem(row, 4, new QTableWidgetItem(QString("+%1").arg(s.capacite - effectif)));
+
+            auto *cellW = new QWidget;
+            auto *hl = new QHBoxLayout(cellW);
+            hl->setContentsMargins(4, 2, 4, 2);
+            hl->setSpacing(6);
+
+            auto *btnAff = new QPushButton("AFFECTER", cellW);
+            btnAff->setCursor(Qt::PointingHandCursor);
+            btnAff->setStyleSheet(QString(
+                                      "QPushButton { background:%1; color:#FFF; border:none; border-radius:5px;"
+                                      "padding:4px 8px; font-size:10px; font-weight:800; }"
+                                      "QPushButton:hover { background:%2; }")
+                                      .arg(Palette::succesDark, Palette::succes));
+
+            auto *btnHist = new QPushButton("HISTORIQUE", cellW);
+            btnHist->setCursor(Qt::PointingHandCursor);
+            btnHist->setStyleSheet(QString(
+                                       "QPushButton { background:%1; color:#F1F5F9; border:1px solid %2;"
+                                       "border-radius:5px; padding:4px 8px; font-size:10px; font-weight:800; }"
+                                       "QPushButton:hover { background:%2; }")
+                                       .arg(Palette::carteAlt, Palette::bordure));
+
+            const qint64 sid = s.id;
+            QObject::connect(btnAff, &QPushButton::clicked, &dlg, [&, s, effectif, dDeb, dur]() {
+                QString embedSortie;
+                if (affecterSalleSpecifique(s, dDeb, dur, effectif, edProjet->text(), &dlg, &embedSortie)) {
+                    lblEmbedSortie->setText(embedSortie);
+                    QMessageBox::information(&dlg, "Confirmation Officielle", embedSortie);
+                    remplirListeDispo();
+                }
+            });
+
+            QObject::connect(btnHist, &QPushButton::clicked, &dlg, [this, sid]() {
+                this->ouvrirHistoriqueSalle(sid);
+            });
+
+            hl->addWidget(btnAff);
+            hl->addWidget(btnHist);
+            tblDispo->setCellWidget(row, 5, cellW);
+            ++row;
+        }
+
+        if (candidates.isEmpty()) {
+            lblEmbedSortie->setText(construireEmbedHtml(
+                Palette::danger,
+                "AUCUNE DISPONIBILITÉ",
+                "Aucun espace éligible trouvé",
+                QString("Effectif : %1 · Durée : %2 j").arg(effectif).arg(dur),
+                "Aucune salle disponible sans conflit de période ne correspond à cet effectif. "
+                "Ajustez la date, la durée ou l'effectif requis."));
+        } else {
+            lblEmbedSortie->setText(construireEmbedHtml(
+                Palette::accentGlow,
+                "RÉSULTATS D'ÉLIGIBILITÉ",
+                QString("%1 salle(s) disponible(s) identifiée(s)").arg(candidates.size()),
+                QString("Effectif : %1 · Début : %2").arg(effectif).arg(dDeb.toString("dd/MM/yyyy")),
+                "Cliquez sur <b>AFFECTER</b> pour valider l'attribution officielle d'une salle ou sur "
+                "<b>HISTORIQUE</b> pour consulter son registre complet."));
+        }
+    };
+
+    QObject::connect(btnListerDispo, &QPushButton::clicked, &dlg, remplirListeDispo);
+
+    QObject::connect(btnRecommander, &QPushButton::clicked, &dlg, [&]() {
+        int effectif = 0, dur = 0;
+        QDate dDeb;
+        if (!lireParams(effectif, dDeb, dur)) return;
+
+        const QVector<Salle> candidates = calculerCandidates(effectif, dDeb, dur);
+        if (candidates.isEmpty()) {
+            QMessageBox::warning(&dlg, "Affectation",
+                                 "Aucune salle disponible sans conflit pour cette période et cet effectif.");
+            return;
+        }
+
+        const Salle &best = candidates.first();
+        QString embedSortie;
+        if (affecterSalleSpecifique(best, dDeb, dur, effectif, edProjet->text(), &dlg, &embedSortie)) {
+            lblEmbedSortie->setText(embedSortie);
+            QMessageBox::information(&dlg, "Recommandation Officielle Validée", embedSortie);
+            remplirListeDispo();
+        }
     });
 
-    const Salle &best = candidates.first();
-    const int marge = best.capacite - effectif;
+    auto *footerBtns = new QHBoxLayout;
+    footerBtns->addStretch();
+    auto *btnFermer = new QPushButton("FERMER", &dlg);
+    btnFermer->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
+    QObject::connect(btnFermer, &QPushButton::clicked, &dlg, &QDialog::accept);
+    footerBtns->addWidget(btnFermer);
+    lay->addLayout(footerBtns);
 
-    QString conseil;
-    if (marge <= 2)      conseil = "Ajustement optimal ✨";
-    else if (marge <= 5) conseil = "Bonne adéquation ✅";
-    else                 conseil = "Capacité plus large que nécessaire ⚠";
+    remplirListeDispo();
+    dlg.exec();
+}
 
-    QMessageBox::information(this, "Affectation intelligente",
-                             QString("<b>Salle recommandée pour %1 personne(s) :</b><br><br>"
-                                     "<b>%2</b> (cap. %3) — %4<br>Marge : %5 place(s)<br><br><i>%6</i>")
-                                 .arg(effectif).arg(best.nom.toHtmlEscaped())
-                                 .arg(best.capacite).arg(best.type.toHtmlEscaped())
-                                 .arg(marge).arg(conseil));
+void salle::ouvrirEspaceMetierQR()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle("Métier 2 — QR Code, Scan & Fiche Oracle");
+    dlg.setMinimumSize(640, 420);
+    dlg.setStyleSheet(QString("QDialog { background:%1; } QLabel { color:%2; }")
+                          .arg(Palette::carte, Palette::texte));
+
+    auto *lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(24, 24, 24, 24);
+    lay->setSpacing(14);
+
+    auto *lbl = new QLabel("<h2 style='color:#818CF8;margin:0;'>📱 QR Code & Vérification Oracle</h2>"
+                           "<p style='color:#94A3B8;'>Importez une image QR ou saisissez une référence (ex. <code>HACKNOVA|SALLE|ID=1</code>) pour charger la fiche depuis Oracle.</p>");
+    lbl->setTextFormat(Qt::RichText);
+    lbl->setWordWrap(true);
+    lay->addWidget(lbl);
+
+    auto *edCode = new QLineEdit(&dlg);
+    edCode->setPlaceholderText("HACKNOVA|SALLE|ID=1 ou ID numérique");
+    edCode->setStyleSheet(styleChamp());
+    lay->addWidget(edCode);
+
+    auto *lblEmbedQR = new QLabel(&dlg);
+    lblEmbedQR->setTextFormat(Qt::RichText);
+    lblEmbedQR->setWordWrap(true);
+    lblEmbedQR->setText(construireEmbedHtml(
+        "#38BDF8",
+        "CONTRÔLE D'ACCÈS QR",
+        "Lecteur & vérificateur officiel Oracle",
+        "En attente d'entrée",
+        "Importez un fichier QR Code ou saisissez un identifiant de salle pour vérifier son statut en temps réel."));
+    lay->addWidget(lblEmbedQR);
+
+    auto *btns = new QHBoxLayout;
+    btns->setSpacing(10);
+    auto *btnImport = new QPushButton("📁 Importer image QR", &dlg);
+    btnImport->setStyleSheet(styleBouton(Palette::accentDark, Palette::accent));
+    auto *btnVerifier = new QPushButton("✅ Vérifier dans Oracle", &dlg);
+    btnVerifier->setStyleSheet(styleBouton(Palette::succesDark, Palette::succes));
+    auto *btnFermer = new QPushButton("Fermer", &dlg);
+    btnFermer->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
+
+    btns->addWidget(btnImport);
+    btns->addWidget(btnVerifier);
+    btns->addStretch();
+    btns->addWidget(btnFermer);
+    lay->addLayout(btns);
+
+    QObject::connect(btnFermer, &QPushButton::clicked, &dlg, &QDialog::accept);
+    QObject::connect(btnImport, &QPushButton::clicked, [&]() {
+        lblEmbedQR->setText(construireEmbedHtml(
+            "#38BDF8",
+            "SCAN D'IMAGE",
+            "Sélection du fichier QR Code",
+            QDateTime::currentDateTime().toString("HH:mm:ss"),
+            "Veuillez sélectionner l'image contenant le QR Code de la salle."));
+        ouvrirScannerImage();
+    });
+    QObject::connect(btnVerifier, &QPushButton::clicked, [&]() {
+        const QString txt = edCode->text().trimmed();
+        if (txt.isEmpty()) {
+            QMessageBox::warning(&dlg, "QR Code", "Saisissez ou importez un code QR.");
+            return;
+        }
+        lblEmbedQR->setText(construireEmbedHtml(
+            Palette::succes,
+            "VÉRIFICATION ORACLE",
+            QString("Analyse de la référence « %1 »").arg(txt),
+            QDateTime::currentDateTime().toString("HH:mm:ss"),
+            "Interrogation de la base Oracle en cours..."));
+        traiterPayloadQRScanne(txt);
+    });
+
+    dlg.exec();
 }
 
 /* ============================================================
- *  MÉTIER — QR CODE
+ *  MÉTIER — QR CODE CONNECTÉ À ORACLE
  * ============================================================ */
 QString salle::genererRemarqueAuto(const Salle &s) const
 {
     QStringList notes;
     if (s.estDisponible()) notes << "Salle prête à être utilisée.";
-    else notes << "Salle non disponible — vérifier avant toute réservation.";
+    else notes << "Salle non disponible ou actuellement occupée.";
 
-    if (s.capacite < 5)      notes << QString("Capacité très réduite (%1 places) — idéale pour petites équipes.").arg(s.capacite);
-    else if (s.capacite < 15) notes << QString("Capacité moyenne (%1 places) — convient aux équipes standard.").arg(s.capacite);
-    else                      notes << QString("Grande capacité (%1 places) — adaptée aux événements de masse.").arg(s.capacite);
-
-    if (s.type.contains("informatique", Qt::CaseInsensitive)) notes << "Prévoir vérification des postes et du réseau.";
-    else if (s.type.contains("conférence", Qt::CaseInsensitive)) notes << "Prévoir sonorisation et projecteur.";
-    else if (s.type.contains("réunion", Qt::CaseInsensitive)) notes << "Prévoir table de réunion et paperboard.";
+    if (s.capacite < 5)       notes << QString("Capacité très réduite (%1 places).").arg(s.capacite);
+    else if (s.capacite < 15) notes << QString("Capacité moyenne (%1 places).").arg(s.capacite);
+    else                      notes << QString("Grande capacité (%1 places).").arg(s.capacite);
 
     return notes.join(" ");
 }
@@ -1556,9 +2493,7 @@ QString salle::genererRemarqueAuto(const Salle &s) const
 QString salle::genererEngagementAdmin(const Salle &s) const
 {
     return QString("Je, administrateur HACKNOVA, engage ma responsabilité sur l'utilisation "
-                   "conforme de la salle « %1 » (ID %2, type %3, capacité %4). Toute réservation "
-                   "doit respecter les règles de sécurité et d'occupation. En cas d'anomalie, "
-                   "la salle sera immédiatement réaffectée ou fermée.")
+                   "conforme de la salle « %1 » (ID %2, type %3, capacité %4).")
         .arg(s.nom, QString::number(s.id), s.type, QString::number(s.capacite));
 }
 
@@ -1570,41 +2505,13 @@ QString salle::genererMessageAdministratif(const Salle &s, const QString &contex
 
     if (contexte == "consultation") {
         if (s.estDisponible()) {
-            return QString("Bienvenue à la salle <b>%1</b>. Cette salle de type <b>%2</b> "
-                           "est actuellement <b>disponible</b> et peut accueillir jusqu'à %3 personnes. "
-                           "Vous pouvez procéder à la planification d'un événement.")
-                .arg(nom, type, cap);
-        } else {
-            return QString("La salle <b>%1</b> est actuellement marquée <b>indisponible</b>. "
-                           "Toute demande d'utilisation doit être préalablement validée par un "
-                           "administrateur. Contactez le service logistique avant toute réservation.")
-                .arg(nom);
+            return QString("La salle <b>%1</b> (%2, %3 places) est <b>disponible</b> à la date du %4.")
+                .arg(nom, type, cap, QDate::currentDate().toString("dd/MM/yyyy"));
         }
+        return QString("La salle <b>%1</b> est actuellement <b>indisponible</b> à la date du %2.")
+            .arg(nom, QDate::currentDate().toString("dd/MM/yyyy"));
     }
-
-    if (contexte == "reservation") {
-        if (s.estDisponible())
-            return QString("La réservation de la salle <b>%1</b> est possible. Confirmez votre "
-                           "demande avec le responsable d'étage et respectez la capacité de %2 places.")
-                .arg(nom, cap);
-        return QString("La réservation de la salle <b>%1</b> ne peut être effectuée pour le moment "
-                       "car la salle est indisponible.").arg(nom);
-    }
-
-    if (contexte == "avertissement") {
-        return QString("⚠️ Attention : l'utilisation de la salle <b>%1</b> est soumise aux règles "
-                       "d'occupation (%2 places max), au respect du matériel et au bon usage du "
-                       "QR Code d'accès.").arg(nom, cap);
-    }
-
-    if (contexte == "maintenance") {
-        return QString("La salle <b>%1</b> est en maintenance ou indisponible. "
-                       "Merci de vérifier les prochaines disponibilités avant de planifier une activité.")
-            .arg(nom);
-    }
-
-    return QString("Bienvenue à la salle <b>%1</b> — type %2 — capacité %3 personnes.")
-        .arg(nom, type, cap);
+    return QString("Salle <b>%1</b> — type %2 — capacité %3 personnes.").arg(nom, type, cap);
 }
 
 PayloadQR salle::construirePayloadQR(const Salle &s) const
@@ -1617,6 +2524,7 @@ PayloadQR salle::construirePayloadQR(const Salle &s) const
     p.disponibilite   = s.disponibilite;
     p.remarqueAuto    = genererRemarqueAuto(s);
     p.engagementAdmin = genererEngagementAdmin(s);
+    p.messageQRAuto   = genererMessageAutoQR(s, "generation");
     p.dateGeneration  = QDateTime::currentDateTime().toString(Qt::ISODate);
     return p;
 }
@@ -1657,21 +2565,25 @@ QPixmap salle::genererPixmapQR(const QString &contenu, int taille) const
 void salle::ouvrirGenerateurQR(qint64 idSalle)
 {
     const auto opt = chargerSalle(idSalle);
-    if (!opt.has_value()) return;
+    if (!opt.has_value()) {
+        QMessageBox::warning(this, "QR Code", "Salle introuvable dans Oracle.");
+        return;
+    }
     const Salle &s = *opt;
     const PayloadQR payload = construirePayloadQR(s);
     const QString contenu = payload.serialiser();
 
-    const QPixmap pixQR = genererPixmapQR(contenu, 360);
+    enregistrerHistorique(idSalle, "QR", payload.messageQRAuto, payload.engagementAdmin);
+
+    const QPixmap pixQR = genererPixmapQR(contenu, 340);
     if (pixQR.isNull()) {
-        QMessageBox::warning(this, "QR Code",
-                             "Échec de la génération du QR Code.\nVérifiez l'intégration de qrcodegen.");
+        QMessageBox::warning(this, "QR Code", "Échec de la génération du QR Code.");
         return;
     }
 
     QDialog dlg(this);
-    dlg.setWindowTitle(QString("QR Code — %1").arg(s.nom));
-    dlg.setMinimumWidth(600);
+    dlg.setWindowTitle(QString("QR Code Officiel — %1").arg(s.nom));
+    dlg.setMinimumWidth(640);
     dlg.setStyleSheet(QString("QDialog { background:%1; } QLabel { color:%2; }")
                           .arg(Palette::carte, Palette::texte));
 
@@ -1681,8 +2593,8 @@ void salle::ouvrirGenerateurQR(qint64 idSalle)
 
     auto *titre = new QLabel(QString(
                                  "<div style='font-size:20px;font-weight:900;color:%1;'>%2</div>"
-                                 "<div style='font-size:11px;color:%3;'>ID %4 · %5 places · %6</div>")
-                                 .arg(Palette::texte, s.nom.toHtmlEscaped(), Palette::texteMuted)
+                                 "<div style='font-size:11px;color:%3;'>Identifiant #%4 · %5 places · %6</div>")
+                                 .arg(Palette::accentGlow, s.nom.toHtmlEscaped(), Palette::texteMuted)
                                  .arg(s.id).arg(s.capacite).arg(s.type.toHtmlEscaped()));
     titre->setTextFormat(Qt::RichText);
     lay->addWidget(titre);
@@ -1690,32 +2602,41 @@ void salle::ouvrirGenerateurQR(qint64 idSalle)
     auto *imgLabel = new QLabel;
     imgLabel->setPixmap(pixQR);
     imgLabel->setAlignment(Qt::AlignCenter);
-    imgLabel->setStyleSheet("background:#FFFFFF;border-radius:12px;padding:16px;");
+    imgLabel->setStyleSheet("background:#FFFFFF;border-radius:12px;padding:14px;");
     lay->addWidget(imgLabel);
 
     auto *codeLabel = new QLabel(QString("<code style='color:%1;font-size:11px;'>%2</code>")
-                                     .arg(Palette::texteMuted, contenu.toHtmlEscaped()));
+                                     .arg(Palette::accentGlow, contenu.toHtmlEscaped()));
     codeLabel->setTextFormat(Qt::RichText);
     codeLabel->setAlignment(Qt::AlignCenter);
     codeLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     lay->addWidget(codeLabel);
 
-    auto *infoMsg = new QLabel(genererMessageAdministratif(s, "consultation"));
-    infoMsg->setStyleSheet(QString("color:%1;font-size:11px;background:%2;"
-                                   "padding:12px;border-radius:8px;")
-                               .arg(Palette::texteMuted, Palette::carteAlt));
-    infoMsg->setWordWrap(true);
-    lay->addWidget(infoMsg);
+    auto *embedQR = creerCarteEmbed(
+        &dlg,
+        "#38BDF8",
+        "ÉMISSION OFFICIELLE QR",
+        QString("Jeton d'accès — Salle %1").arg(s.nom),
+        QDateTime::currentDateTime().toString("dd/MM/yyyy · HH:mm"),
+        payload.messageQRAuto,
+        QString("<b>Engagement officiel :</b> %1").arg(payload.engagementAdmin.toHtmlEscaped()),
+        "HACKNOVA · Identification numérique des salles");
+    lay->addWidget(embedQR);
 
     auto *btns = new QHBoxLayout;
+    btns->setSpacing(8);
     auto *btnSave  = new QPushButton("💾 ENREGISTRER PNG");
     btnSave->setStyleSheet(styleBouton(Palette::succesDark, Palette::succes));
     auto *btnCopy  = new QPushButton("📋 COPIER LE CODE");
-    btnCopy->setStyleSheet(styleBouton(Palette::bordure, "#334155", "color:#CBD5E1;"));
+    btnCopy->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
+    auto *btnHist  = new QPushButton("🕒 HISTORIQUE OFFICIEL");
+    btnHist->setStyleSheet(styleBouton(Palette::accentDark, Palette::accent));
     auto *btnClose = new QPushButton("FERMER");
-    btnClose->setStyleSheet(styleBouton(Palette::bordure, "#334155", "color:#CBD5E1;"));
+    btnClose->setStyleSheet(styleBouton(Palette::carteAlt, Palette::bordure, "color:#F1F5F9;"));
+
     btns->addWidget(btnSave);
     btns->addWidget(btnCopy);
+    btns->addWidget(btnHist);
     btns->addStretch();
     btns->addWidget(btnClose);
     lay->addLayout(btns);
@@ -1723,6 +2644,9 @@ void salle::ouvrirGenerateurQR(qint64 idSalle)
     QObject::connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
     QObject::connect(btnCopy, &QPushButton::clicked, [contenu]() {
         QApplication::clipboard()->setText(contenu);
+    });
+    QObject::connect(btnHist, &QPushButton::clicked, &dlg, [this, idSalle]() {
+        this->ouvrirHistoriqueSalle(idSalle);
     });
     QObject::connect(btnSave, &QPushButton::clicked, &dlg, [this, pixQR, s]() {
         const QString path = QFileDialog::getSaveFileName(this, "Enregistrer le QR Code",
@@ -1755,7 +2679,7 @@ void salle::ouvrirScannerImage()
 
     if (resultats.empty()) {
         QMessageBox::warning(this, "Scan QR",
-                             "Aucun QR Code détecté dans cette image.\nVérifiez la qualité ou le cadrage.");
+                             "Aucun QR Code détecté dans cette image.");
         return;
     }
 
@@ -1788,40 +2712,46 @@ void salle::traiterPayloadQRScanne(const QString &texte)
 
     const auto opt = chargerSalle(id);
     if (!opt.has_value()) {
-        QMessageBox::warning(this, "QR Code",
-                             QString("Aucune salle ne correspond à l'ID %1.").arg(id));
+        QMessageBox::warning(this, "QR Code — Salle introuvable",
+                             QString("La salle associée à l'ID %1 n'existe plus ou est introuvable dans Oracle.").arg(id));
         return;
     }
     const Salle &s = *opt;
     const QString couleur = s.estDisponible() ? Palette::succes : Palette::danger;
-    const QString etat    = s.estDisponible() ? "✅ ACCÈS AUTORISÉ" : "⛔ ACCÈS REFUSÉ";
-    const QString msgAdmin = genererMessageAdministratif(s, "consultation");
+    const QString etat    = s.estDisponible() ? "DISPONIBLE" : "INDISPONIBLE / OCCUPÉE";
+    const QString msgQR   = genererMessageAutoQR(s, "scan");
+    const QString eng     = genererEngagementAdmin(s);
 
-    QMessageBox::information(this, "Résultat du scan",
-                             QString("<h2 style='color:%1;margin:0;'>%2</h2>"
-                                     "<p style='color:%3;'>Salle identifiée : <b>%4</b></p><hr/>"
-                                     "<p style='color:%5;'><b style='color:%6;'>Capacité :</b> %7 places</p>"
-                                     "<p style='color:%5;'><b style='color:%6;'>Type :</b> %8</p>"
-                                     "<p style='color:%5;'><b style='color:%6;'>Statut :</b> "
-                                     "<span style='color:%1;font-weight:bold;'>%9</span></p>"
-                                     "<p style='color:%5;font-style:italic;'>%10</p>")
-                                 .arg(couleur, etat, Palette::texteMuted, s.nom.toHtmlEscaped())
-                                 .arg(Palette::texte, Palette::accent)
-                                 .arg(s.capacite).arg(s.type.toHtmlEscaped())
-                                 .arg(s.disponibilite.toHtmlEscaped())
-                                 .arg(msgAdmin));
-}
+    enregistrerHistorique(s.id, "QR", msgQR, eng);
 
-void salle::onValiderQR()
-{
-    if (!ui->leCodeQR_4) return;
-    const QString code = ui->leCodeQR_4->text().trimmed();
-    if (code.isEmpty()) {
-        QMessageBox::warning(this, "QR Code", "Saisissez un code manuel.");
-        return;
-    }
-    traiterPayloadQRScanne(code);
-    ui->leCodeQR_4->clear();
+    const QString periodeInfo = (s.dateDebut.isValid() && s.dureeJours > 0)
+                                    ? QString("<b>Projet :</b> %1<br><b>Période :</b> Du %2 au %3 (%4 jour(s))")
+                                          .arg(s.projetAssocie.isEmpty() ? "Réservation" : s.projetAssocie.toHtmlEscaped(),
+                                               s.dateDebut.toString("dd/MM/yyyy"))
+                                          .arg(s.dateFin.toString("dd/MM/yyyy"))
+                                          .arg(s.dureeJours)
+                                    : "Aucune période de réservation active enregistrée.";
+
+    const QString corpsHtml = QString(
+                                  "<p style='margin:0 0 6px 0;'><b>Identifiant :</b> #%1 · <b>Salle :</b> <b>%2</b> · "
+                                  "<b>Catégorie :</b> %3 · <b>Capacité :</b> %4 places</p>"
+                                  "<p style='margin:0 0 8px 0;'><b>État officiel :</b> <span style='color:%5;font-weight:800;'>%6</span></p>"
+                                  "<p style='margin:0 0 8px 0;'>%7</p>"
+                                  "<p style='margin:0;color:#94A3B8;'>%8</p>")
+                                  .arg(s.id).arg(s.nom.toHtmlEscaped())
+                                  .arg(s.type.toHtmlEscaped()).arg(s.capacite)
+                                  .arg(couleur, etat.toHtmlEscaped(), msgQR, periodeInfo);
+
+    const QString embedMsg = construireEmbedHtml(
+        couleur,
+        "FICHE OFFICIELLE QR · ORACLE",
+        QString("Salle %1 — %2").arg(s.nom, etat),
+        QDateTime::currentDateTime().toString("dd/MM/yyyy à HH:mm"),
+        corpsHtml,
+        QString("<b>Engagement officiel :</b> %1").arg(eng.toHtmlEscaped()),
+        "HACKNOVA · Contrôle d'accès certifié");
+
+    QMessageBox::information(this, "Fiche Officielle QR — Oracle", embedMsg);
 }
 
 QWidget *salle::creerWidgetActions(qint64 idSalle, const QString &nomSalle)
@@ -1841,8 +2771,8 @@ QWidget *salle::creerWidgetActions(qint64 idSalle, const QString &nomSalle)
         return b;
     };
 
-    auto *btnVoir  = makeBtn("VOIR",     "#475569", "#64748B");
-    auto *btnModif = makeBtn("MODIFIER", Palette::accentDark, Palette::accent);
+    auto *btnVoir  = makeBtn("VOIR",     "#334155", "#475569");
+    auto *btnModif = makeBtn("MODIFIER", Palette::accent, Palette::accentDark);
     auto *btnQR    = makeBtn("QR",       Palette::succesDark, Palette::succes);
     auto *btnSuppr = makeBtn("SUPPR",    Palette::dangerDark, Palette::danger);
 
@@ -1872,6 +2802,7 @@ void salle::rafraichirSallesEtStats()
 {
     remplirTableSalles();
     dessinerStatistiquesSalles();
+    mettreAJourTableauDeBordBas();
 }
 
 void salle::viderFormulaireSalle()
@@ -1904,147 +2835,168 @@ void salle::viderTableSalles()
 }
 
 /* ============================================================
- *  STATISTIQUES SALLES
+ *  STATISTIQUES AVANCÉES (%, BARRES HORIZONTALES & VERTICALES)
  * ============================================================ */
 void salle::dessinerStatistiquesSalles()
 {
+    if (!m_lblStatsResume || !m_lblBarHorizontale || !m_lblBarVerticale) return;
+
+    const QVector<Salle> salles = chargerSallesFiltrees(CriteresTri{});
+    const int total = salles.size();
+    int dispo = 0, occupe = 0, capTotale = 0;
+    QMap<QString, int> parType;
+    QMap<QString, int> parCapacite;
+
+    for (const Salle &s : salles) {
+        if (s.estDisponible()) ++dispo;
+        else ++occupe;
+        capTotale += s.capacite;
+        parType[s.type.isEmpty() ? "Non défini" : s.type]++;
+
+        QString trancheCap;
+        if (s.capacite < 10)      trancheCap = "< 10";
+        else if (s.capacite < 30) trancheCap = "10-29";
+        else if (s.capacite < 60) trancheCap = "30-59";
+        else                      trancheCap = "60+";
+        parCapacite[trancheCap]++;
+    }
+
+    const double pctDispo  = (total > 0) ? (100.0 * dispo  / total) : 0.0;
+    const double pctOccupe = (total > 0) ? (100.0 * occupe / total) : 0.0;
+
+    m_lblStatsResume->setText(QString(
+                                  "<div style='background:#1E293B;border:1px solid #334155;border-radius:8px;padding:8px 10px;font-size:11px;color:#F1F5F9;'>"
+                                  "<b>Total :</b> %1 &nbsp;|&nbsp; "
+                                  "<span style='color:#34D399;'><b>Dispo :</b> %2 (%3%)</span> &nbsp;|&nbsp; "
+                                  "<span style='color:#F87171;'><b>Occupées :</b> %4 (%5%)</span><br>"
+                                  "<b>Capacité cumulée :</b> %6 places &nbsp;|&nbsp; "
+                                  "<span style='color:#818CF8;'><b>Ajouts dispo :</b> +%7</span>"
+                                  "</div>")
+                                  .arg(total)
+                                  .arg(dispo).arg(pctDispo, 0, 'f', 1)
+                                  .arg(occupe).arg(pctOccupe, 0, 'f', 1)
+                                  .arg(capTotale)
+                                  .arg(m_compteurSallesDisponibles));
+
+    // A. Barres horizontales (Disponibilité, Occupation, Types)
     {
-        QPixmap pix(190, 190);
+        QPixmap pix(380, 270);
         pix.fill(Qt::transparent);
         QPainter p(&pix);
         p.setRenderHint(QPainter::Antialiasing);
 
-        int dispo = 0, indispo = 0;
-        for (int i = 0; i < ui->tableSalles->rowCount(); ++i) {
-            QTableWidgetItem *it = ui->tableSalles->item(i, 4);
-            if (!it) continue;
-            if (it->text().compare("Disponible", Qt::CaseInsensitive) == 0) dispo++;
-            else indispo++;
-        }
-        int total = dispo + indispo;
+        p.setPen(QColor(Palette::accentGlow));
+        QFont tf("Segoe UI", 9, QFont::Bold);
+        p.setFont(tf);
+        p.drawText(6, 16, "A. Barres horizontales — États & Types");
 
-        QRectF rect(10, 15, 110, 110);
-        if (total == 0) {
-            p.setBrush(QColor(Palette::bordure));
+        struct ItemBar { QString label; int val; QColor col; };
+        QVector<ItemBar> items;
+        items.append({"Disponible", dispo, QColor(Palette::succes)});
+        items.append({"Occupée", occupe, QColor(Palette::danger)});
+        for (auto it = parType.begin(); it != parType.end(); ++it) {
+            items.append({it.key(), it.value(), QColor(Palette::accentGlow)});
+        }
+
+        int maxVal = 1;
+        for (const auto &it : items) if (it.val > maxVal) maxVal = it.val;
+
+        int y = 30;
+        const int barH = 18;
+        const int maxBarW = 165;
+        QFont lf("Segoe UI", 8, QFont::Bold);
+        p.setFont(lf);
+
+        for (const auto &it : items) {
+            if (y + barH > 260) break;
+            p.setPen(QColor(Palette::texte));
+            p.drawText(6, y + 13, it.label.left(18));
+
             p.setPen(Qt::NoPen);
-            p.drawEllipse(rect);
-        } else {
-            double startAngle = 90.0;
-            auto drawSlice = [&](int val, const QColor &color) {
-                if (val <= 0) return;
-                double sweep = -360.0 * val / total;
-                p.setBrush(color);
-                p.setPen(Qt::NoPen);
-                p.drawPie(rect, int(startAngle * 16), int(sweep * 16));
-                startAngle += sweep;
-            };
-            drawSlice(dispo,   QColor(Palette::succes));
-            drawSlice(indispo, QColor(Palette::danger));
+            p.setBrush(QColor(Palette::carteAlt));
+            p.drawRoundedRect(140, y, maxBarW, barH, 4, 4);
+
+            const int w = int(maxBarW * (double(it.val) / maxVal));
+            p.setBrush(it.col);
+            p.drawRoundedRect(140, y, qMax(2, w), barH, 4, 4);
+
+            p.setPen(QColor(Palette::texte));
+            p.drawText(140 + maxBarW + 8, y + 13, QString::number(it.val));
+            y += 26;
         }
-
-        QFont f = p.font();
-        f.setFamily("Segoe UI");
-        f.setPointSize(8);
-        f.setBold(true);
-        p.setFont(f);
-
-        int legY = 25;
-        p.setBrush(QColor(Palette::succes));
-        p.setPen(Qt::NoPen);
-        p.drawEllipse(135, legY, 8, 8);
-        p.setPen(QColor(Palette::texte));
-        p.drawText(148, legY + 8, QString("Dispo (%1)").arg(dispo));
-        legY += 25;
-
-        p.setBrush(QColor(Palette::danger));
-        p.setPen(Qt::NoPen);
-        p.drawEllipse(135, legY, 8, 8);
-        p.setPen(QColor(Palette::texte));
-        p.drawText(148, legY + 8, QString("Indispo (%1)").arg(indispo));
-
-        f.setBold(false);
-        f.setPointSize(8);
-        p.setFont(f);
-        p.setPen(QColor(Palette::texteDim));
-        p.drawText(10, 175, "Répartition par disponibilité");
         p.end();
-        ui->sallesPage_labelStatutPie->setPixmap(pix);
+        m_lblBarHorizontale->setPixmap(pix);
     }
 
+    // B. Barres verticales (Tranches de capacité)
     {
-        QPixmap pix(230, 190);
+        QPixmap pix(380, 280);
         pix.fill(Qt::transparent);
         QPainter p(&pix);
         p.setRenderHint(QPainter::Antialiasing);
 
-        QMap<QString, int> types;
-        for (int i = 0; i < ui->tableSalles->rowCount(); ++i) {
-            QTableWidgetItem *it = ui->tableSalles->item(i, 3);
-            if (it && !it->text().isEmpty()) types[it->text()]++;
+        p.setPen(QColor(Palette::accentGlow));
+        QFont tf("Segoe UI", 9, QFont::Bold);
+        p.setFont(tf);
+        p.drawText(6, 16, "B. Barres verticales — Capacités");
+
+        const QStringList tranches = {"< 10", "10-29", "30-59", "60+"};
+        int maxVal = 1;
+        for (const QString &tr : tranches) {
+            if (parCapacite.value(tr, 0) > maxVal) maxVal = parCapacite.value(tr, 0);
         }
 
-        if (types.isEmpty()) {
-            QFont f = p.font();
-            f.setFamily("Segoe UI");
-            f.setPointSize(9);
-            f.setBold(true);
-            p.setFont(f);
-            p.setPen(QColor(Palette::texteDim));
-            p.drawText(10, 100, "Aucune salle enregistrée");
-        } else {
-            int maxVal = 1;
-            for (int v : types) if (v > maxVal) maxVal = v;
+        const int baseY = 238;
+        const int maxH  = 160;
+        const int barW  = 52;
+        const int gap   = 32;
+        int x = 26;
 
-            auto couleur = [](const QString &t) -> QColor {
-                if (t == "Salle informatique") return QColor("#818CF8");
-                if (t == "Salle de réunion")   return QColor("#FBBF24");
-                if (t == "Salle conférence")   return QColor("#10B981");
-                return QColor("#EF4444");
-            };
+        QFont lf("Segoe UI", 8, QFont::Bold);
+        p.setFont(lf);
 
-            int y = 20;
-            const int barMaxW = 60;
-            const int barH = 18;
+        for (const QString &tr : tranches) {
+            const int val = parCapacite.value(tr, 0);
+            const int h = int(maxH * (double(val) / maxVal));
 
-            QFont f = p.font();
-            f.setFamily("Segoe UI");
-            f.setPointSize(8);
-            f.setBold(true);
-            p.setFont(f);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(Palette::carteAlt));
+            p.drawRoundedRect(x, baseY - maxH, barW, maxH, 5, 5);
 
-            for (auto it = types.begin(); it != types.end(); ++it) {
-                p.setBrush(couleur(it.key()));
-                p.setPen(Qt::NoPen);
-                p.drawEllipse(10, y + 4, 8, 8);
+            p.setBrush(QColor(Palette::accentGlow));
+            p.drawRoundedRect(x, baseY - h, barW, qMax(2, h), 5, 5);
 
-                p.setPen(QColor(Palette::texte));
-                p.drawText(25, y + 12, it.key());
+            p.setPen(QColor(Palette::texte));
+            p.drawText(x, baseY - h - 6, barW, 14, Qt::AlignCenter, QString::number(val));
+            p.drawText(x, baseY + 6, barW, 18, Qt::AlignCenter, tr);
 
-                p.setPen(Qt::NoPen);
-                p.setBrush(QColor(Palette::bordure));
-                p.drawRoundedRect(130, y, barMaxW, barH, 4, 4);
-
-                int w = int(barMaxW * double(it.value()) / maxVal);
-                p.setBrush(couleur(it.key()));
-                p.drawRoundedRect(130, y, w, barH, 4, 4);
-
-                p.setPen(QColor("#FFFFFF"));
-                p.drawText(130 + w + 6, y + 13, QString::number(it.value()));
-
-                y += barH + 20;
-            }
+            x += barW + gap;
         }
-
-        QFont f = p.font();
-        f.setFamily("Segoe UI");
-        f.setPointSize(8);
-        f.setBold(false);
-        p.setFont(f);
-        p.setPen(QColor(Palette::texteDim));
-        p.drawText(10, 175, "Nombre de salles par type");
         p.end();
-        ui->sallesPage_labelRoleBar->setPixmap(pix);
+        m_lblBarVerticale->setPixmap(pix);
     }
+}
+
+void salle::mettreAJourTableauDeBordBas()
+{
+    if (!m_lblDashTotal || !m_lblDashDispo || !m_lblDashOccupe || !m_lblDashTaux || !m_lblDashMaj)
+        return;
+
+    const QVector<Salle> salles = chargerSallesFiltrees(CriteresTri{});
+    const int total = salles.size();
+    int dispo = 0, occupe = 0;
+    for (const Salle &s : salles) {
+        if (s.estDisponible()) ++dispo;
+        else ++occupe;
+    }
+    const double taux = (total > 0) ? (100.0 * dispo / total) : 0.0;
+
+    m_lblDashTotal->setText(QString("<b>Total salles :</b> %1").arg(total));
+    m_lblDashDispo->setText(QString("<b>Disponibles :</b> %1").arg(dispo));
+    m_lblDashOccupe->setText(QString("<b>Occupées :</b> %1").arg(occupe));
+    m_lblDashTaux->setText(QString("<b>Taux dispo :</b> %1%").arg(taux, 0, 'f', 1));
+    m_lblDashMaj->setText(QString("<b>Dernière MAJ :</b> %1")
+                              .arg(QDateTime::currentDateTime().toString("dd/MM/yyyy HH:mm:ss")));
 }
 
 /* ============================================================
@@ -2059,11 +3011,13 @@ void salle::allerPage(int index)
         if (auto *sa = w->findChild<QScrollArea*>())
             sa->verticalScrollBar()->setValue(0);
     }
+    if (index == 2) {
+        rafraichirSallesEtStats();
+    }
 }
 
-void salle::goLogin()    { allerPage(0); }
-void salle::goEmployes() { allerPage(1); }
-void salle::goSalles()   { allerPage(2); }
+void salle::goLogin()  { allerPage(0); }
+void salle::goSalles() { allerPage(2); }
 
 void salle::connecterLogin()
 {
@@ -2119,10 +3073,10 @@ void salle::onConnexion()
 
     if (q.next()) {
         const QString actif = q.value(1).toString().trimmed().toUpper();
-        if (actif == "O" || actif == "0") {
+        if (actif == "O" || actif == "1" || actif == "0") {
             q.finish();
             ui->lineEditMotDePasse->clear();
-            goEmployes();
+            goSalles();
             return;
         }
         QMessageBox::warning(this, "Connexion refusée", "Ce compte est inactif.");
@@ -2139,85 +3093,28 @@ void salle::onConnexion()
 
 void salle::connecterNavigation()
 {
-    if (ui->btnEmployes)    QObject::connect(ui->btnEmployes,    &QPushButton::clicked, this, &salle::goEmployes);
-    if (ui->btnSalles)      QObject::connect(ui->btnSalles,      &QPushButton::clicked, this, &salle::goSalles);
-    if (ui->sallesPage_btnEmployes) QObject::connect(ui->sallesPage_btnEmployes, &QPushButton::clicked, this, &salle::goEmployes);
-    if (ui->sallesPage_btnSalles)   QObject::connect(ui->sallesPage_btnSalles,   &QPushButton::clicked, this, &salle::goSalles);
-    if (ui->btnNotifications)       QObject::connect(ui->btnNotifications,       &QPushButton::clicked, this, &salle::onNotifications);
-    if (ui->btnProfil)              QObject::connect(ui->btnProfil,              &QPushButton::clicked, this, &salle::onProfil);
-    if (ui->btnDeconnexion)         QObject::connect(ui->btnDeconnexion,         &QPushButton::clicked, this, &salle::onDeconnexion);
-    if (ui->sallesPage_btnDeconnexion) QObject::connect(ui->sallesPage_btnDeconnexion, &QPushButton::clicked, this, &salle::onDeconnexion);
+    if (ui->sallesPage_btnSalles)
+        QObject::connect(ui->sallesPage_btnSalles, &QPushButton::clicked, this, &salle::goSalles);
+    if (ui->sallesPage_btnNotifications)
+        QObject::connect(ui->sallesPage_btnNotifications, &QPushButton::clicked, this, &salle::onNotifications);
+    if (ui->sallesPage_btnProfil)
+        QObject::connect(ui->sallesPage_btnProfil, &QPushButton::clicked, this, &salle::onProfil);
+    if (ui->sallesPage_btnDeconnexion)
+        QObject::connect(ui->sallesPage_btnDeconnexion, &QPushButton::clicked, this, &salle::onDeconnexion);
 }
 
 void salle::connecterChatbot()
 {
-    if (ui->leQuestion)
-        QObject::connect(ui->leQuestion, &QLineEdit::returnPressed,
-                         this, &salle::onEnvoyerQuestion);
-
-    if (ui->textChatbot) {
-        ui->textChatbot->setHtml(R"(
-            <div style='color:#E2E8F0;font-family:Segoe UI,Arial;font-size:13px;'>
-            <p><b style='color:#818CF8;'>HACKNOVA Bot :</b>
-            Bonjour 👋 Je suis votre assistant. Posez-moi une question
-            sur les salles, les employés, les QR codes, etc.</p>
-            </div>
-        )");
-    }
+    // Pas de widget chatbot dédié dans salle.ui
 }
 
 void salle::onEnvoyerQuestion()
 {
-    if (!ui->leQuestion || !ui->textChatbot) return;
-    const QString q = ui->leQuestion->text().trimmed();
-    if (q.isEmpty()) return;
-
-    const QString ql = q.toLower();
-    QString reponse;
-
-    if (ql.contains("bonjour") || ql.contains("salut") || ql.contains("hello"))
-        reponse = "Bonjour 👋 Comment puis-je vous aider ?";
-    else if (ql.contains("combien") && ql.contains("salle"))
-        reponse = QString("Il y a actuellement <b>%1 salles</b>.").arg(ui->tableSalles->rowCount());
-    else if (ql.contains("disponible") || ql.contains("dispo")) {
-        int n = 0;
-        for (int i = 0; i < ui->tableSalles->rowCount(); ++i) {
-            QTableWidgetItem *it = ui->tableSalles->item(i, 4);
-            if (it && it->text().compare("Disponible", Qt::CaseInsensitive) == 0) n++;
-        }
-        reponse = QString("<b>%1 salles</b> sont disponibles.").arg(n);
-    }
-    else if (ql.contains("combien") && ql.contains("employ"))
-        reponse = QString("Il y a <b>%1 employés</b>.").arg(ui->tableEmployes->rowCount());
-    else if (ql.contains("qr") || ql.contains("code"))
-        reponse = "Chaque salle possède un <b>QR Code</b> (bouton <b>QR</b> dans la liste). "
-                  "Vous pouvez générer, enregistrer en PNG, imprimer ou scanner via import d'image.";
-    else if (ql.contains("statistique") || ql.contains("graphique"))
-        reponse = "Les statistiques sont calculées à droite (camembert + barres).";
-    else if (ql.contains("merci"))
-        reponse = "Avec plaisir 😊";
-    else if (ql.contains("aide") || ql.contains("help"))
-        reponse = "Je peux vous renseigner sur : salles, employés, disponibilités, "
-                  "statistiques, QR codes.";
-    else
-        reponse = "Je n'ai pas compris. Tapez <b>aide</b>.";
-
-    QString html = ui->textChatbot->toHtml();
-    html += QString(R"(
-        <div style='color:#E2E8F0;font-family:Segoe UI,Arial;font-size:13px;margin-top:8px;'>
-        <p><b style='color:#10B981;'>Vous :</b> %1</p>
-        <p><b style='color:#818CF8;'>Bot :</b> %2</p>
-        </div>
-    )").arg(q.toHtmlEscaped(), reponse);
-
-    ui->textChatbot->setHtml(html);
-    ui->textChatbot->verticalScrollBar()->setValue(
-        ui->textChatbot->verticalScrollBar()->maximum());
-    ui->leQuestion->clear();
+    // Pas de widget chatbot dédié dans salle.ui
 }
 
 /* ============================================================
- *  DIALOGUES — notifications / profil / déconnexion
+ *  DIALOGUES — notifications / profil / déconnexion (MODE SOMBRE)
  * ============================================================ */
 static void afficherDialogue(QWidget *parent, const QString &titre, const QString &html)
 {
@@ -2233,8 +3130,8 @@ static void afficherDialogue(QWidget *parent, const QString &titre, const QStrin
     txt->setHtml(html);
     txt->setOpenExternalLinks(true);
     txt->setStyleSheet(QString("QTextBrowser { background:%1; color:%2; "
-                               "border:none; font-size:13px; }")
-                           .arg(Palette::carteAlt, Palette::texte));
+                               "border:1px solid %3; border-radius:8px; padding:10px; font-size:13px; }")
+                           .arg(Palette::carteAlt, Palette::texte, Palette::bordure));
     lay->addWidget(txt, 1);
 
     auto *btn = new QPushButton("FERMER");
@@ -2249,7 +3146,7 @@ static void afficherDialogue(QWidget *parent, const QString &titre, const QStrin
 void salle::onNotifications()
 {
     afficherDialogue(this, "Notifications", R"(
-        <div style='color:#E2E8F0;font-family:Segoe UI;font-size:13px;'>
+        <div style='color:#F1F5F9;font-family:Segoe UI;font-size:13px;'>
         <p style='color:#818CF8;font-weight:800;'>Notification</p>
         <p style='color:#94A3B8;'>Aucune notification disponible.</p>
         </div>
@@ -2259,11 +3156,11 @@ void salle::onNotifications()
 void salle::onProfil()
 {
     afficherDialogue(this, "Profil utilisateur", R"(
-        <div style='color:#E2E8F0;text-align:center;font-family:Segoe UI;'>
+        <div style='color:#F1F5F9;text-align:center;font-family:Segoe UI;'>
         <h1 style='color:#818CF8;'>HN</h1>
-        <h2 style='color:#FFFFFF;'>Utilisateur</h2>
+        <h2>Utilisateur</h2>
         <p style='color:#94A3B8;'><b>Rôle :</b> Administrateur</p>
-        <p style='color:#94A3B8;'><b>Statut :</b> <span style='color:#10B981;'>Actif</span></p>
+        <p style='color:#94A3B8;'><b>Statut :</b> <span style='color:#34D399;'>Actif</span></p>
         <hr/>
         <p style='color:#64748B;font-size:11px;'>HACKNOVA — Smart Hackathon Management</p>
         </div>
@@ -2282,160 +3179,124 @@ void salle::onDeconnexion()
 }
 
 /* ============================================================
- *  THÈME GLOBAL
+ *  THÈME GLOBAL SOMBRE — Identité HACKNOVA (#0B0F1A / #111827 / #4338CA)
  * ============================================================ */
-void salle::appliquerTheme()
+void salle::appliquerThemeSombre()
 {
     this->setStyleSheet(R"(
-QMainWindow, QWidget#centralWidget { background-color:#080C14; }
-QWidget { color:#E2E8F0; font-family:'Segoe UI','Arial',sans-serif; font-size:13px; }
-QToolTip { background-color:#1E293B; color:#F1F5F9; border:1px solid #475569;
+QMainWindow, QWidget#centralWidget, QWidget#pageLogin, QWidget#pageSalles,
+QScrollArea, QWidget#scrollSallesContent { background-color:#0B0F1A; }
+QWidget { color:#F1F5F9; font-family:'Segoe UI','Arial',sans-serif; font-size:13px; }
+QToolTip { background-color:#1E1B4B; color:#FFFFFF; border:1px solid #818CF8;
            border-radius:6px; padding:6px 10px; }
 
-QScrollBar:vertical { background:transparent; width:10px; }
+QScrollBar:vertical { background:#0B0F1A; width:10px; }
 QScrollBar::handle:vertical { background:#334155; min-height:40px; border-radius:5px; }
 QScrollBar::handle:vertical:hover { background:#475569; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }
 
-QFrame#frameLoginBrand { background-color:#1E1B4B; border:1px solid #312E81;
+QFrame#frameLoginBrand { background-color:#1E1B4B; border:1px solid #4338CA;
     border-top-left-radius:20px; border-bottom-left-radius:20px; }
-QFrame#frameLoginCard  { background-color:#111827; border:1px solid #1E293B;
+QFrame#frameLoginCard  { background-color:#111827; border:1px solid #334155;
     border-top-right-radius:20px; border-bottom-right-radius:20px; }
 QLabel#labelLoginLogo { background-color:#4338CA; color:#FFFFFF; border-radius:60px;
     font-size:44px; font-weight:900; }
 QLabel#labelLoginBrandTitle { color:#FFFFFF; font-size:28px; font-weight:900; letter-spacing:2px; }
 QLabel#labelLoginBrandSub   { color:#A5B4FC; font-size:11px; font-weight:800; letter-spacing:1.5px; }
-QLabel#labelLoginBrandSlogan{ color:#C7D2FE; font-size:13px; }
-QLabel#labelLoginBrandTeam  { color:#6366F1; font-size:10px; font-weight:800; letter-spacing:1px; }
-QLabel#labelLoginTitle      { color:#FFFFFF; font-size:24px; font-weight:900; }
-QLabel#labelLoginField, QLabel#labelLoginField2 { color:#818CF8; font-size:11px; font-weight:800; letter-spacing:1px; }
+QLabel#labelLoginBrandSlogan{ color:#E0E7FF; font-size:13px; }
+QLabel#labelLoginBrandTeam  { color:#818CF8; font-size:10px; font-weight:800; letter-spacing:1px; }
+QLabel#labelLoginTitle      { color:#F1F5F9; font-size:24px; font-weight:900; }
+QLabel#labelLoginField, QLabel#labelLoginField2 { color:#A5B4FC; font-size:11px; font-weight:800; letter-spacing:1px; }
 QLineEdit#lineEditIdentifiant, QLineEdit#lineEditMotDePasse {
-    background-color:#0F172A; color:#F1F5F9; border:1px solid #334155;
+    background-color:#1E293B; color:#F1F5F9; border:1px solid #334155;
     border-radius:8px; padding:0 12px; font-size:14px; }
-QLineEdit#lineEditIdentifiant:focus, QLineEdit#lineEditMotDePasse:focus { border:1px solid #6366F1; }
+QLineEdit#lineEditIdentifiant:focus, QLineEdit#lineEditMotDePasse:focus { border:1px solid #818CF8; }
 QCheckBox#checkBoxSouvenir { color:#94A3B8; font-size:12px; }
 QPushButton#pushButtonConnexion { background-color:#4338CA; color:#FFFFFF; border:none;
     border-radius:8px; font-size:14px; font-weight:900; }
-QPushButton#pushButtonConnexion:hover { background-color:#6366F1; }
-QLabel#labelLoginFooter { color:#6366F1; font-size:12px; font-weight:bold; }
+QPushButton#pushButtonConnexion:hover { background-color:#3730A3; }
+QLabel#labelLoginFooter { color:#818CF8; font-size:12px; font-weight:bold; }
 
 QFrame#frameNavbar, QFrame#sallesPage_frameNavbar { background-color:#111827;
-    border:1px solid #1E293B; border-radius:12px; }
+    border:1px solid #334155; border-radius:12px; }
 QLabel#labelNavLogo, QLabel#sallesPage_labelNavLogo { background-color:#4338CA; color:#FFFFFF;
     border-radius:8px; font-size:18px; font-weight:900; }
 QLabel#labelNavBrand, QLabel#sallesPage_labelNavBrand { color:#FFFFFF; font-size:14px;
     font-weight:900; letter-spacing:1.5px; }
-QLabel#labelNavSub, QLabel#sallesPage_labelNavSub { color:#818CF8; font-size:9px; font-weight:800; }
+QLabel#labelNavSub, QLabel#sallesPage_labelNavSub { color:#A5B4FC; font-size:9px; font-weight:800; }
 
-QPushButton#btnDashboard, QPushButton#btnEmployes, QPushButton#btnSalles,
-QPushButton#btnEvaluateurs, QPushButton#btnParticipants, QPushButton#btnSponsors,
-QPushButton#btnProjets, QPushButton#btnNotifications, QPushButton#btnProfil,
-QPushButton#sallesPage_btnDashboard, QPushButton#sallesPage_btnEmployes,
-QPushButton#sallesPage_btnEvaluateurs, QPushButton#sallesPage_btnParticipants,
-QPushButton#sallesPage_btnSponsors, QPushButton#sallesPage_btnProjets,
-QPushButton#sallesPage_btnNotifications, QPushButton#sallesPage_btnProfil {
-    background-color:transparent; color:#94A3B8; border:none; border-radius:6px;
+QPushButton#sallesPage_btnSalles, QPushButton#sallesPage_btnNotifications,
+QPushButton#sallesPage_btnProfil {
+    background-color:transparent; color:#CBD5E1; border:none; border-radius:6px;
     font-size:10px; font-weight:800; padding:6px 8px; }
-QPushButton#btnDashboard:hover, QPushButton#btnEmployes:hover, QPushButton#btnSalles:hover,
-QPushButton#btnEvaluateurs:hover, QPushButton#btnParticipants:hover, QPushButton#btnSponsors:hover,
-QPushButton#btnProjets:hover, QPushButton#btnNotifications:hover, QPushButton#btnProfil:hover,
-QPushButton#sallesPage_btnDashboard:hover, QPushButton#sallesPage_btnEmployes:hover,
-QPushButton#sallesPage_btnEvaluateurs:hover, QPushButton#sallesPage_btnParticipants:hover,
-QPushButton#sallesPage_btnSponsors:hover, QPushButton#sallesPage_btnProjets:hover,
-QPushButton#sallesPage_btnNotifications:hover, QPushButton#sallesPage_btnProfil:hover {
-    background-color:#1F2937; color:#F1F5F9; }
-QPushButton#btnEmployes, QPushButton#sallesPage_btnSalles {
-    background-color:#312E81; color:#FFFFFF; border-bottom:2px solid #6366F1; }
-QPushButton#btnDeconnexion, QPushButton#sallesPage_btnDeconnexion {
-    background-color:#7F1D1D; color:#FFFFFF; border:1px solid #991B1B; border-radius:6px;
+QPushButton#sallesPage_btnSalles:hover, QPushButton#sallesPage_btnNotifications:hover,
+QPushButton#sallesPage_btnProfil:hover {
+    background-color:#1E293B; color:#FFFFFF; }
+QPushButton#sallesPage_btnSalles {
+    background-color:#4338CA; color:#FFFFFF; border-bottom:2px solid #A5B4FC; }
+QPushButton#sallesPage_btnDeconnexion {
+    background-color:#DC2626; color:#FFFFFF; border:none; border-radius:6px;
     font-size:10px; font-weight:800; padding:6px 8px; }
-QPushButton#btnDeconnexion:hover, QPushButton#sallesPage_btnDeconnexion:hover {
-    background-color:#991B1B; }
+QPushButton#sallesPage_btnDeconnexion:hover {
+    background-color:#B91C1C; }
 
-QLabel#labelTitleEmployes, QLabel#labelTitleSalles { color:#FFFFFF; font-size:22px; font-weight:900; }
-QLabel#labelSubEmployes, QLabel#labelSubSalles { color:#64748B; font-size:13px; }
+QLabel#labelTitleSalles { color:#F1F5F9; font-size:22px; font-weight:900; }
+QLabel#labelSubSalles   { color:#94A3B8; font-size:13px; }
 
-QFrame#cardFormEmployes, QFrame#cardFormSalles, QFrame#cardTableEmployes, QFrame#cardTableSalles,
-QFrame#frameChatbot, QFrame#cardStats, QFrame#sallesPage_cardStats,
-QFrame#frameAffectation_2, QFrame#frameQR_4 {
-    background-color:#111827; border:1px solid #1E293B; border-radius:12px; }
-QLabel#labelFormTitleEmployes, QLabel#labelFormTitleSalles,
-QLabel#labelTableTitleEmployes, QLabel#labelTableTitleSalles,
-QLabel#lblTitreChatbot, QLabel#labelStatsTitle, QLabel#sallesPage_labelStatsTitle,
-QLabel#lblTitreAffect_2, QLabel#lblTitreQR_4 {
-    color:#FFFFFF; font-size:15px; font-weight:800; }
-QLabel#lblDescAffect_2, QLabel#lblDescQR_4 { color:#94A3B8; font-size:12px; }
+QFrame#cardFormSalles, QFrame#cardTableSalles, QFrame#sallesPage_cardStats {
+    background-color:#111827; border:1px solid #334155; border-radius:12px; }
+QLabel#labelFormTitleSalles, QLabel#labelTableTitleSalles, QLabel#sallesPage_labelStatsTitle {
+    color:#818CF8; font-size:15px; font-weight:800; }
 
-QLabel#lblEmpID, QLabel#lblEmpNom, QLabel#lblEmpPrenom, QLabel#lblEmpMdp,
-QLabel#lblEmpRole, QLabel#lblEmpStatut, QLabel#lblSalleID, QLabel#lblSalleNom,
-QLabel#lblSalleCapacite, QLabel#lblSalleType, QLabel#lblSalleDispo,
+QLabel#lblSalleID, QLabel#lblSalleCapacite, QLabel#lblSalleType, QLabel#lblSalleDispo,
 QLabel#lblSalleBloc, QLabel#lblSalleEtage, QLabel#lblSalleNumero {
-    color:#818CF8; font-size:11px; font-weight:800; }
-QLineEdit#lineEditEmpID, QLineEdit#lineEditEmpNom, QLineEdit#lineEditEmpPrenom,
-QLineEdit#lineEditEmpMdp, QLineEdit#lineEditSalleID, QLineEdit#lineEditSalleNom,
-QLineEdit#lineEdit, QLineEdit#lineEdit_2, QLineEdit#lineEditSalleTypeAutre,
+    color:#A5B4FC; font-size:11px; font-weight:800; }
+
+QLineEdit#lineEditSalleID, QLineEdit#lineEdit_2, QLineEdit#lineEditSalleTypeAutre,
 QSpinBox#spinBoxSalleCapacite, QSpinBox#spinBoxSalleEtage, QSpinBox#spinBoxSalleNumero,
-QComboBox#comboBoxSalleBloc {
-    background-color:#0B1120; color:#F1F5F9; border:1px solid #334155;
-    border-radius:6px; padding:0 10px; font-size:13px; min-height:32px; }
-QLineEdit#lineEditSalleNom:focus, QLineEdit#lineEdit_2:focus,
-QSpinBox#spinBoxSalleCapacite:focus { border:1px solid #6366F1; }
+QComboBox#comboBoxSalleBloc, QComboBox#comboBoxSalleType, QComboBox#comboBoxSalleDispo {
+    background-color:#1E293B; color:#F1F5F9; border:1px solid #334155;
+    border-radius:8px; padding:0 10px; font-size:13px; min-height:32px; }
+QLineEdit#lineEdit_2:focus, QSpinBox#spinBoxSalleCapacite:focus { border:1px solid #818CF8; }
 
-QComboBox#comboBoxEmpRole, QComboBox#comboBoxEmpStatut,
-QComboBox#comboBoxSalleType, QComboBox#comboBoxSalleDispo {
-    background-color:#0B1120; color:#F1F5F9; border:1px solid #334155;
-    border-radius:6px; padding:0 10px; font-size:13px; min-height:32px; }
 QComboBox QAbstractItemView { background-color:#1E293B; color:#F1F5F9;
-    border:1px solid #334155; selection-background-color:#4338CA; }
+    border:1px solid #475569; selection-background-color:#4338CA; selection-color:#FFFFFF; }
 
-QPushButton#btnAjouterEmploye, QPushButton#btnExporterEmploye,
 QPushButton#btnAjouterSalle, QPushButton#btnExporterSalle {
-    background-color:#059669; color:#FFFFFF; border:1px solid #047857;
-    border-radius:6px; font-size:12px; font-weight:800; padding:0 14px;
+    background-color:#059669; color:#FFFFFF; border:none;
+    border-radius:8px; font-size:12px; font-weight:800; padding:0 14px;
     min-width:100px; min-height:32px; }
-QPushButton#btnAjouterEmploye:hover, QPushButton#btnExporterEmploye:hover,
 QPushButton#btnAjouterSalle:hover, QPushButton#btnExporterSalle:hover {
     background-color:#10B981; }
-QPushButton#btn_Annuler, QPushButton#btnTrierEmploye,
+
 QPushButton#btnAnnuler, QPushButton#btnTrierSalle {
-    background-color:#1E293B; color:#CBD5E1; border:1px solid #334155;
-    border-radius:6px; font-size:12px; font-weight:800; padding:0 14px;
+    background-color:#1E293B; color:#F1F5F9; border:1px solid #475569;
+    border-radius:8px; font-size:12px; font-weight:800; padding:0 14px;
     min-width:100px; min-height:32px; }
-QPushButton#btn_Annuler:hover, QPushButton#btnTrierEmploye:hover,
 QPushButton#btnAnnuler:hover, QPushButton#btnTrierSalle:hover {
     background-color:#334155; }
-QPushButton#btnRechercherEmploye, QPushButton#btnRechercherSalle {
-    background-color:#4338CA; color:#FFFFFF; border:1px solid #3730A3;
-    border-radius:6px; font-size:12px; font-weight:800; padding:0 14px;
+
+QPushButton#btnRechercherSalle {
+    background-color:#4338CA; color:#FFFFFF; border:none;
+    border-radius:8px; font-size:12px; font-weight:800; padding:0 14px;
     min-width:100px; min-height:32px; }
-QPushButton#btnRechercherEmploye:hover, QPushButton#btnRechercherSalle:hover {
-    background-color:#6366F1; }
-QPushButton#btnSuggerer_2, QPushButton#btnValiderQR_4, QPushButton#btnEnvoyer,
-QPushButton#btnScannerCamera_4 {
-    background-color:#4338CA; color:#FFFFFF; border:1px solid #3730A3;
-    border-radius:6px; font-size:12px; font-weight:800; padding:0 12px; min-height:30px; }
-QPushButton#btnSuggerer_2:hover, QPushButton#btnValiderQR_4:hover,
-QPushButton#btnEnvoyer:hover, QPushButton#btnScannerCamera_4:hover {
-    background-color:#6366F1; }
+QPushButton#btnRechercherSalle:hover {
+    background-color:#3730A3; }
 
-QTableWidget { background-color:#0B1120; alternate-background-color:#111827;
-    color:#E2E8F0; border:1px solid #1E293B; border-radius:8px; gridline-color:#1E293B; }
+QTableWidget { background-color:#111827; alternate-background-color:#162032;
+    color:#F1F5F9; border:1px solid #334155; border-radius:8px; gridline-color:#1E293B; }
 QTableWidget::item { padding:4px 8px; border-bottom:1px solid #1E293B; }
-QTableWidget::item:selected { background-color:#312E81; color:#FFFFFF; }
-QHeaderView::section { background-color:#111827; color:#94A3B8; font-size:11px;
-    font-weight:800; padding:8px 6px; border:none; border-bottom:2px solid #312E81; }
+QTableWidget::item:selected { background-color:#4338CA; color:#FFFFFF; }
+QHeaderView::section { background-color:#1E1B4B; color:#FFFFFF; font-size:11px;
+    font-weight:800; padding:8px 6px; border:none; }
 
-QTextBrowser#textChatbot { background-color:#0B1120; color:#E2E8F0;
-    border:1px solid #1E293B; border-radius:8px; padding:6px; }
-QLineEdit#leQuestion, QLineEdit#leEffectif_2, QLineEdit#leCodeQR_4 {
-    background-color:#111827; color:#F1F5F9; border:1px solid #334155;
-    border-radius:6px; padding:0 10px; }
+QLabel#labelFooterSalles { color:#64748B; }
 
-QMessageBox, QDialog { background-color:#111827; color:#E2E8F0; }
-QMessageBox QLabel, QDialog QLabel { color:#E2E8F0; }
+QMessageBox, QDialog { background-color:#111827; color:#F1F5F9; }
+QMessageBox QLabel, QDialog QLabel { color:#F1F5F9; }
 QMessageBox QPushButton, QDialog QPushButton {
-    background-color:#4338CA; color:#FFFFFF; border:none; border-radius:6px;
+    background-color:#4338CA; color:#FFFFFF; border:none; border-radius:8px;
     font-weight:800; padding:6px 16px; }
-QMessageBox QPushButton:hover, QDialog QPushButton:hover { background-color:#6366F1; }
+QMessageBox QPushButton:hover, QDialog QPushButton:hover { background-color:#3730A3; }
 )");
 }

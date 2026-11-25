@@ -28,6 +28,5 @@ DEPENDPATH += "C:/zxing/zxing-cpp-3.1.1/core/src"
 LIBS += -L"C:/zxing/zxing-cpp-build/core" -lZXing
 
 # Default rules for deployment.
-qnx: target.path = /tmp/$${TARGET}/bin
-else: unix:!android: target.path = /opt/$${TARGET}/bin
+qnx: target.path = /tmp/$${TARGET}/bin else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
